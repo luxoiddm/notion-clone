@@ -1,0 +1,26 @@
+{
+  "name": "notion-clone",
+  "private": true,
+  "version": "1.26.0",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "dev:server": "npm run dev -w apps/server",
+    "dev:web": "npm run dev -w apps/web"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "packageManager": "npm@10.8.0"
+}
