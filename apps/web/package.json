@@ -1,0 +1,33 @@
+{
+  "name": "web",
+  "license": "Apache-2.0",
+  "version": "1.26.0",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/run.mjs dev",
+    "build": "next build",
+    "start": "node scripts/run.mjs start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.4",
+    "socket.io-client": "^4.7.5",
+    "lucide-react": "^0.400.0",
+    "next-themes": "^0.3.0",
+    "clsx": "^2.1.1",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.5.0"
+  }
+}

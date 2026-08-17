@@ -1,0 +1,37 @@
+{
+  "name": "server",
+  "license": "Apache-2.0",
+  "version": "1.26.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "admin:reset-password": "tsx scripts/reset-admin.ts"
+  },
+  "dependencies": {
+    "@core/auth": "*",
+    "@core/chat": "*",
+    "@core/fs-engine": "*",
+    "@core/realtime": "*",
+    "@core/webrtc": "*",
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "cookie-parser": "^1.4.6",
+    "express-rate-limit": "^7.4.0",
+    "multer": "^1.4.5-lts.1",
+    "sharp": "^0.33.5",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/cookie-parser": "^1.4.7",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.14.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}

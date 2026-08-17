@@ -1,0 +1,174 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface: 255 255 255;
+  --surface-panel: 247 247 245;
+  --surface-hover: 239 239 237;
+  --ink: 31 31 31;
+  --ink-muted: 120 119 116;
+  --ink-faint: 178 177 173;
+  /* Muted slate-blue — the default preset in lib/accentPalette.ts ('slate').
+     Was a much more saturated pure blue (47 111 239); kept as the 'blue'
+     preset for anyone who preferred it, see the settings page. */
+  --accent: 100 116 139;
+  --accent-soft: 226 232 240;
+  --line: 0 0 0;
+}
+
+.dark {
+  --surface: 25 25 25;
+  --surface-panel: 32 32 32;
+  --surface-hover: 42 42 42;
+  --ink: 233 233 231;
+  --ink-muted: 155 155 152;
+  --ink-faint: 110 110 107;
+  --accent: 148 163 184;
+  --accent-soft: 30 41 59;
+  --line: 255 255 255;
+}
+
+* {
+  border-color: rgb(var(--line) / 0.08);
+}
+
+body {
+  background-color: rgb(var(--surface));
+  color: rgb(var(--ink));
+}
+
+::selection {
+  background-color: rgb(var(--accent-soft));
+}
+
+/* Skeleton shimmer used while pages/content are loading */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgb(var(--surface-hover)) 25%,
+    rgb(var(--surface-panel)) 37%,
+    rgb(var(--surface-hover)) 63%
+  );
+  background-size: 200% 100%;
+}
+
+/* Block editor caret + focus ring */
+[contenteditable]:focus {
+  outline: none;
+}
+
+.editor-block {
+  transition: background-color 120ms ease;
+}
+
+.editor-block a {
+  color: rgb(var(--accent));
+  text-decoration: underline;
+  text-decoration-color: rgb(var(--accent) / 0.35);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.editor-block a:hover {
+  text-decoration-color: rgb(var(--accent));
+}
+
+/* Markdown rendered inside a chat bubble (see chatMarkdownToHtml) — the
+   bubble background is either the accent color (own messages, white
+   text) or surface-panel (everyone else's), so these rely on
+   currentColor / low-opacity overlays rather than fixed colors that
+   would only look right against one of the two. */
+.chat-message-body code {
+  background: rgb(0 0 0 / 0.12);
+  border-radius: 3px;
+  padding: 0.05em 0.35em;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+}
+
+.chat-message-body pre {
+  background: rgb(0 0 0 / 0.12);
+  border-radius: 6px;
+  padding: 0.5em 0.7em;
+  margin: 0.25em 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.chat-message-body pre code {
+  background: none;
+  padding: 0;
+}
+
+.chat-message-body a {
+  color: currentColor;
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-underline-offset: 2px;
+  opacity: 0.9;
+}
+
+.chat-message-body a:hover {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/*
+ * Печать документа — только сам документ (заголовок + блоки), без
+ * сайдбаров, шапки, тулбара редактора и панели комментариев. Editor.tsx
+ * помечает свой корневой контейнер id="print-root"; всё остальное на
+ * странице прячется, затем сам print-root возвращается к видимости и
+ * репозиционируется, чтобы вырваться из layout родителей, которые
+ * технически всё ещё display:none/скрыты вокруг него — стандартный
+ * приём для «напечатать только один элемент страницы», не что-то
+ * специфичное для этого проекта.
+ */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  #print-root,
+  #print-root * {
+    visibility: visible;
+  }
+
+  #print-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-width: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  /* Тулбар форматирования и наведение-контролы блока (плюс/перетаскивание)
+     — часть UI редактора, не часть самого документа. */
+  .no-print {
+    display: none !important;
+  }
+
+  /* Тёмная тема не должна печататься тёмным фоном с белым текстом —
+     чёрные чернила на белом принтер использует эффективнее, да и просто
+     ожидаемо для печатного листа независимо от темы интерфейса. */
+  #print-root {
+    background: white !important;
+    color: black !important;
+  }
+  #print-root * {
+    color: black !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+}
