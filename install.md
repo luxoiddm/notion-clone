@@ -36,8 +36,8 @@ Ubuntu x64 — штатно, без доп. действий), так что н�
 Скопируй примеры и заполни своими значениями:
 
 ```bash
-cp apps/server/.env.example apps/server/.env
-cp apps/web/.env.local.example apps/web/.env.local
+cp apps/server/env.example apps/server/.env
+cp apps/web/env.local.example apps/web/.env.local
 ```
 
 ### `apps/server/.env`
