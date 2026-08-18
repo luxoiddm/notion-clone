@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { getLastLocation, saveLastLocation } from '../lib/lastLocation';
 import { Cloud, CloudOff, Loader2, Share2, Users, ShieldCheck, LogOut, FolderOpen, MessageSquare, PanelRight, Menu } from 'lucide-react';
 import { useSession } from '../components/SessionProvider';
 import { useUserStore } from '../store/useUserStore';
@@ -45,14 +46,30 @@ function Workspace() {
   // in-memory variable. Runs once, guarded by the ref so it doesn't
   // fight with openPage() calls made afterward for other reasons
   // (selecting a different page, and so on).
+  //
+  // Falls back to the remembered last location (localStorage, survives
+  // a fresh login or a brand new tab, unlike the URL params, which only
+  // help for a same-tab refresh) when the URL itself has no explicit
+  // owner/project/page — including redirecting to /chat if that's
+  // genuinely where the user was, not just defaulting to nothing.
   const hasRestoredFromUrl = useRef(false);
   useEffect(() => {
     if (hasRestoredFromUrl.current || !user) return;
     const owner = searchParams.get('owner');
     const project = searchParams.get('project');
     const page = searchParams.get('page');
-    if (owner && project && page) openPage(owner, project, page);
+    if (owner && project && page) {
+      openPage(owner, project, page);
+    } else {
+      const last = getLastLocation();
+      if (last?.route === 'chat') {
+        router.replace(last.chatId ? `/chat?open=${encodeURIComponent(last.chatId)}` : '/chat');
+      } else if (last?.route === 'editor') {
+        openPage(last.ownerId, last.projectId, last.pageId);
+      }
+    }
     hasRestoredFromUrl.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, searchParams, openPage]);
 
   // Mirrors the active page into the URL — replace, not push, so
@@ -62,6 +79,9 @@ function Workspace() {
   // owner/project/page params before they've been read on first load.
   useEffect(() => {
     if (!hasRestoredFromUrl.current) return;
+    if (activeOwnerId && activeProjectId && activePageId) {
+      saveLastLocation({ route: 'editor', ownerId: activeOwnerId, projectId: activeProjectId, pageId: activePageId });
+    }
     const params = new URLSearchParams(window.location.search);
     if (activeOwnerId && activeProjectId && activePageId) {
       params.set('owner', activeOwnerId);

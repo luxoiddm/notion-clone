@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { getLastLocation, saveLastLocation } from '../../lib/lastLocation';
 import { ArrowLeft, MessageSquare, Plus, Users, Loader2, Phone, Trash2 } from 'lucide-react';
 import { useSession } from '../../components/SessionProvider';
 import { api, chatApi, type ChatListItem, type ChatSummary } from '../../lib/api';
@@ -88,10 +89,23 @@ function ChatPageContent() {
   }, [user, refresh]);
 
   // Lets the incoming-call banner (rendered on any page) deep-link
-  // straight into the right conversation: /chat?open=<chatId>.
+  // straight into the right conversation: /chat?open=<chatId>. Falls
+  // back to the remembered last-open chat (localStorage) when there's
+  // no explicit deep-link — survives a fresh login or a brand new tab,
+  // unlike the URL param, which only helps for a same-tab refresh.
+  // Deliberately doesn't fall back across route kinds the way page.tsx's
+  // own restore effect does (redirecting to /chat if that's where the
+  // remembered location points) — landing on /chat is already an
+  // explicit choice the person just made by navigating here, no reason
+  // to second-guess it by bouncing back to the editor.
   useEffect(() => {
     const openId = searchParams.get('open');
-    if (openId) setSelectedChatId(openId);
+    if (openId) {
+      setSelectedChatId(openId);
+    } else {
+      const last = getLastLocation();
+      if (last?.route === 'chat') setSelectedChatId(last.chatId);
+    }
   }, [searchParams]);
 
   // The other direction of the same idea — keeps the URL in sync with
@@ -101,6 +115,7 @@ function ChatPageContent() {
   // not `push`, so switching between chats doesn't spam the browser's
   // back-button history with one entry per chat.
   useEffect(() => {
+    if (selectedChatId) saveLastLocation({ route: 'chat', chatId: selectedChatId });
     const params = new URLSearchParams(window.location.search);
     if (selectedChatId) params.set('open', selectedChatId);
     else params.delete('open');

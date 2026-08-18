@@ -7,9 +7,44 @@ class ApiError extends Error {
 }
 
 let accessToken: string | null = null;
+let onTokenRefreshed: ((token: string) => void) | null = null;
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
+}
+
+/** Lets SessionProvider's own React state stay in sync no matter which mechanism actually refreshed the token underneath it — its proactive timer, or request()'s own reactive retry-on-401 below. Only one subscriber is ever needed (there's exactly one SessionProvider), so this is a single callback slot, not an event-emitter. */
+export function setOnTokenRefreshed(callback: ((token: string) => void) | null) {
+  onTokenRefreshed = callback;
+}
+
+let refreshPromise: Promise<string | null> | null = null;
+
+/**
+ * Exchanges the httpOnly refresh cookie for a new access token.
+ * Deduplicated — concurrent callers (several requests failing with 401
+ * at once, or the reactive retry below firing at the same moment as
+ * SessionProvider's own proactive timer) all await the same in-flight
+ * request instead of firing off several redundant ones.
+ */
+export async function refreshAccessToken(): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
+        if (!res.ok) return null;
+        const { accessToken: token } = (await res.json()) as { accessToken: string };
+        accessToken = token;
+        onTokenRefreshed?.(token);
+        return token;
+      } catch {
+        return null;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+  return refreshPromise;
 }
 
 /**
@@ -25,7 +60,7 @@ export function withAuthToken(url: string): string {
   return `${url}${separator}token=${encodeURIComponent(accessToken)}`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, isRetryAfterRefresh = false): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
     credentials: 'include',
@@ -35,6 +70,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
+
+  // A 401 here almost always means the access token expired mid-session
+  // (it's short-lived by design, 15 minutes) — SessionProvider's own
+  // proactive timer refreshes it well before that in the normal case,
+  // this is the fallback for when a backgrounded tab throttled that
+  // timer, or a request happened to be in flight right as it expired.
+  // Excludes /auth/* — a 401 from login itself means "wrong password",
+  // not "token expired", and retrying /auth/refresh with another
+  // refresh() call would just recurse.
+  if (res.status === 401 && !isRetryAfterRefresh && !path.startsWith('/auth/')) {
+    const newToken = await refreshAccessToken();
+    if (newToken) return request<T>(path, init, true);
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));

@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { api, setAccessToken as setApiAccessToken } from '../lib/api';
+import { api, setAccessToken as setApiAccessToken, refreshAccessToken, setOnTokenRefreshed } from '../lib/api';
 import type { CurrentUser } from '../lib/types';
 
 interface SessionContextValue {
@@ -56,6 +56,34 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  // Keeps this component's own `accessToken` state in sync no matter
+  // which mechanism actually refreshed it underneath — the proactive
+  // timer just below, or request()'s own reactive retry-on-401 in
+  // api.ts (a safety net for when this timer gets throttled, e.g. a
+  // backgrounded tab, or a request happens to be in flight right as the
+  // token expires).
+  useEffect(() => {
+    setOnTokenRefreshed((token) => setAccessToken(token));
+    return () => setOnTokenRefreshed(null);
+  }, []);
+
+  // Proactively refreshes well before the access token's own 15-minute
+  // lifetime runs out, so a session sitting open and in use doesn't hit
+  // a stretch of failed requests waiting on the reactive retry to catch
+  // up — that path still works (see above), this just means it
+  // shouldn't normally be needed at all. Only runs once actually logged
+  // in; nothing to keep refreshing before that.
+  useEffect(() => {
+    if (!user) return;
+    const interval = setInterval(
+      () => {
+        void refreshAccessToken();
+      },
+      12 * 60 * 1000,
+    );
+    return () => clearInterval(interval);
+  }, [user]);
 
   const login = useCallback((u: CurrentUser, token: string) => {
     setApiAccessToken(token);
