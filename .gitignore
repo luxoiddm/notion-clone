@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.next/
+.turbo/
+.env
+.env.local
+.data/
+apps/server/storage/
+*.log
+.DS_Store
