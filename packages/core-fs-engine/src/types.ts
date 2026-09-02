@@ -91,6 +91,8 @@ export interface UserMeta {
   avatarUrl: string | null;
   /** A preset key (e.g. "slate"), not raw RGB — the frontend owns the palette-to-CSS-variable mapping, this is just an opaque per-user preference. */
   accentColor: string | null;
+  /** A disabled user can't log in — checked at both login and refresh (so an already-issued session doesn't keep working after the fact) — but keeps every existing page/file/history untouched, unlike deleting the account. Defaults to true for any account created before this field existed (see FsEngine.getUser's own fallback). */
+  enabled: boolean;
 }
 
 export interface HistorySnapshot {
@@ -132,6 +134,57 @@ export interface SiteSettings {
   /** Shown in the sidebar header — usually a simpler mark, since it renders small (see NEXT_PUBLIC_HEADER_LOGO_HEIGHT). Deliberately a separate image from loginLogoUrl, not the same one reused at two sizes — a detailed logo that reads fine at login-screen size often turns to mush shrunk into a 32px header row. */
   headerLogoUrl: string | null;
   updatedAt: string;
+}
+
+/**
+ * An admin/team-lead-managed public "portal" — a curated tree of pages,
+ * drawn from across everyone's own private workspace, published at a
+ * fixed public URL (`/{slug}`) with no login required to view. Distinct
+ * from the existing per-page `sharing` (SharingEntry) mechanism: that's
+ * one owner sharing one page with specific people/roles inside the
+ * workspace, this is many different authors' pages curated together
+ * into one public-facing structure, gated by moderation rather than by
+ * the original owner's own sharing choice.
+ */
+export interface PublicSite {
+  id: string;
+  /** The public URL segment (`/{slug}`) — must be unique across all public sites, and can't collide with the app's own top-level routes. See PUBLIC_SITE_RESERVED_SLUGS below for the exact current list. */
+  slug: string;
+  title: string;
+  description: string;
+  /** A disabled site 404s at its public URL — the site and its approved tree still exist and aren't lost, just not currently reachable. Doesn't affect the moderator's own management view or the moderation queue. */
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PublicNodeStatus = 'pending' | 'approved' | 'rejected';
+
+/** Every existing top-level route in apps/web/app/, plus the API proxy path — a public site can't use any of these as its slug, since Next.js would never actually route a request there to the dynamic public-site page in the first place (static segments always win over a dynamic one at the same level), making the site permanently unreachable at its own supposed URL. */
+export const PUBLIC_SITE_RESERVED_SLUGS = ['admin', 'chat', 'files', 'settings', 'shared', 'api', 'moderation', 'manifest.webmanifest'];
+
+/**
+ * One page's presence within one PublicSite's own tree — this tree is
+ * entirely independent of the page's `parentId` in its author's private
+ * workspace (a page could be a deeply-nested child there and a top-level
+ * entry here, or vice versa); moderators arrange the public tree
+ * separately from however each contributor organizes their own pages.
+ */
+export interface PublicNode {
+  id: string;
+  /** Identifies the underlying page uniquely across the whole system (not just within one owner's workspace) — the public site never copies page content, only ever reads it live from here. */
+  ownerId: string;
+  projectId: string;
+  pageId: string;
+  /** Another PublicNode's id within the *same* PublicSite, or null for a top-level entry in the public tree. */
+  parentId: string | null;
+  order: number;
+  status: PublicNodeStatus;
+  submittedBy: string;
+  submittedAt: string;
+  moderatedBy: string | null;
+  moderatedAt: string | null;
+  rejectionReason: string | null;
 }
 
 /** Thrown for any fs-engine failure so callers can distinguish engine errors from generic ones. */

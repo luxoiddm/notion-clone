@@ -12,6 +12,10 @@ import {
   PageMeta,
   PageNode,
   ProjectMeta,
+  PublicNode,
+  PublicNodeStatus,
+  PublicSite,
+  PUBLIC_SITE_RESERVED_SLUGS,
   SiteSettings,
   UserFileInfo,
   UserMeta,
@@ -78,6 +82,7 @@ function normalizeUserMeta(raw: Partial<UserMeta>): UserMeta {
     createdAt: raw.createdAt ?? new Date(0).toISOString(),
     avatarUrl: raw.avatarUrl ?? null,
     accentColor: raw.accentColor ?? null,
+    enabled: raw.enabled ?? true,
   };
 }
 
@@ -335,7 +340,7 @@ export class FsEngine {
   // ---------------------------------------------------------------------
 
   /** Creates a user's root folder. Called only from admin-invite flows. */
-  async createUser(userId: string, meta: Omit<UserMeta, 'id' | 'createdAt' | 'avatarUrl' | 'accentColor'>): Promise<UserMeta> {
+  async createUser(userId: string, meta: Omit<UserMeta, 'id' | 'createdAt' | 'avatarUrl' | 'accentColor' | 'enabled'>): Promise<UserMeta> {
     assertSafeId(userId, 'userId');
     const userDir = joinSafe(this.root, 'users', userId);
 
@@ -345,7 +350,7 @@ export class FsEngine {
 
     await fs.mkdir(userDir, { recursive: true });
 
-    const fullMeta: UserMeta = { id: userId, createdAt: new Date().toISOString(), avatarUrl: null, accentColor: null, ...meta };
+    const fullMeta: UserMeta = { id: userId, createdAt: new Date().toISOString(), avatarUrl: null, accentColor: null, enabled: true, ...meta };
     await writeJsonAtomic(joinSafe(userDir, 'meta.json'), fullMeta);
     return fullMeta;
   }
@@ -381,7 +386,7 @@ export class FsEngine {
     return metas.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
-  async updateUser(userId: string, patch: Partial<Pick<UserMeta, 'displayName' | 'role'>>): Promise<UserMeta> {
+  async updateUser(userId: string, patch: Partial<Pick<UserMeta, 'displayName' | 'role' | 'enabled'>>): Promise<UserMeta> {
     assertSafeId(userId, 'userId');
     const metaPath = joinSafe(this.root, 'users', userId, 'meta.json');
     return lockManager.run(metaPath, async () => {
@@ -845,6 +850,24 @@ export class FsEngine {
     });
   }
 
+  /**
+   * `coverImage` holds either an asset URL (an image previously uploaded
+   * via saveAsset — cover upload reuses that same mechanism rather than
+   * a separate one) or a `color:#RRGGBB` string for a solid-color cover.
+   * A plain string field distinguished by a prefix, same convention
+   * already used for PageMeta.icon (emoji vs tile-set URL).
+   */
+  async updatePageCover(ownerId: string, projectId: string, pageId: string, coverImage: string | null, authorId: string): Promise<PageMeta> {
+    const dir = this.pageDir(ownerId, projectId, pageId);
+    return lockManager.run(dir, async () => {
+      const metaPath = joinSafe(dir, 'meta.json');
+      const meta = await readPageMeta(metaPath);
+      const updated: PageMeta = { ...meta, coverImage, updatedAt: new Date().toISOString(), updatedBy: authorId };
+      await writeJsonAtomic(metaPath, updated);
+      return updated;
+    });
+  }
+
   /** Replaces the whole tag list — free-text, no fixed vocabulary or per-project registry to validate against (see PageMeta.tags's doc comment). Trims and drops empty/duplicate entries so a stray extra space or double-click doesn't silently create two visually-identical tags. */
   async updatePageTags(ownerId: string, projectId: string, pageId: string, tags: string[], authorId: string): Promise<PageMeta> {
     const dir = this.pageDir(ownerId, projectId, pageId);
@@ -1191,6 +1214,246 @@ export class FsEngine {
       }
     }
     return matches;
+  }
+
+  // ---------------------------------------------------------------------
+  // Public sites — moderator-curated (Admin or Team-Lead), unauthenticated-
+  // readable trees drawn from across everyone's own private pages. See
+  // PublicSite/PublicNode in types.ts for the full design rationale.
+  // Each site is one self-contained JSON file
+  // (`storageRoot/public-sites/{id}.json`, `{ site, nodes }`) — small
+  // enough in practice (a curated tree, not a firehose of data) that one
+  // file per site, read/written whole, is simpler than the multi-file
+  // layouts used elsewhere in this engine for genuinely large or
+  // frequently-partially-updated data.
+  //
+  // Every mutation here logs a single compact line (`[public-sites]`
+  // prefix, matching the `[startup]` convention already used at server
+  // boot) — kept permanently, not as temporary debugging scaffolding.
+  // Cheap enough for how infrequently these operations actually happen,
+  // and means a future "why didn't this show up" question can be
+  // answered by reading existing logs instead of first shipping a
+  // logging-only release and waiting for it to reproduce again.
+  // ---------------------------------------------------------------------
+
+  private publicSitesDir(): string {
+    return joinSafe(this.root, 'public-sites');
+  }
+
+  private publicSiteFilePath(id: string): string {
+    return joinSafe(this.publicSitesDir(), `${sanitizeFileName(id)}.json`);
+  }
+
+  private async readPublicSiteFile(id: string): Promise<{ site: PublicSite; nodes: PublicNode[] }> {
+    return readJson<{ site: PublicSite; nodes: PublicNode[] }>(this.publicSiteFilePath(id));
+  }
+
+  async listPublicSites(): Promise<PublicSite[]> {
+    const dir = this.publicSitesDir();
+    let files: string[];
+    try {
+      files = await fs.readdir(dir);
+    } catch (err) {
+      if (isNodeError(err) && err.code === 'ENOENT') return [];
+      throw new FsEngineError(`Failed to list public sites: ${dir}`, 'IO_ERROR', err);
+    }
+    const sites = await Promise.all(
+      files.filter((f) => f.endsWith('.json')).map((f) => this.readPublicSiteFile(f.slice(0, -'.json'.length)).then((r) => r.site)),
+    );
+    return sites.sort((a, b) => a.title.localeCompare(b.title));
+  }
+
+  async getPublicSiteById(id: string): Promise<{ site: PublicSite; nodes: PublicNode[] }> {
+    return this.readPublicSiteFile(id);
+  }
+
+  /** Returns null for an unknown or disabled slug — the public route turns either into the same 404, no reason for it to distinguish "doesn't exist" from "exists but turned off" to an anonymous visitor. */
+  async getPublicSiteBySlug(slug: string): Promise<{ site: PublicSite; nodes: PublicNode[] } | null> {
+    const sites = await this.listPublicSites();
+    const match = sites.find((s) => s.slug === slug);
+    if (!match || !match.enabled) return null;
+    return this.readPublicSiteFile(match.id);
+  }
+
+  async createPublicSite(input: { slug: string; title: string; description?: string }): Promise<PublicSite> {
+    const slug = input.slug.trim().toLowerCase();
+    if (!/^[a-z0-9-]+$/.test(slug)) {
+      throw new FsEngineError('Slug may only contain lowercase letters, digits, and hyphens', 'INVALID_INPUT');
+    }
+    if (PUBLIC_SITE_RESERVED_SLUGS.includes(slug)) {
+      throw new FsEngineError(`"${slug}" is reserved and can't be used as a public site slug`, 'INVALID_INPUT');
+    }
+    const existing = await this.listPublicSites();
+    if (existing.some((s) => s.slug === slug)) {
+      throw new FsEngineError(`A public site with slug "${slug}" already exists`, 'ALREADY_EXISTS');
+    }
+
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const site: PublicSite = {
+      id,
+      slug,
+      title: input.title || slug,
+      description: input.description ?? '',
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await fs.mkdir(this.publicSitesDir(), { recursive: true });
+    await writeJsonAtomic(this.publicSiteFilePath(id), { site, nodes: [] });
+    console.log(`[public-sites] created site id=${id} slug=${slug}`);
+    return site;
+  }
+
+  async updatePublicSite(id: string, patch: Partial<Pick<PublicSite, 'title' | 'description' | 'enabled'>>): Promise<PublicSite> {
+    const filePath = this.publicSiteFilePath(id);
+    return lockManager.run(filePath, async () => {
+      const current = await this.readPublicSiteFile(id);
+      const updated: PublicSite = { ...current.site, ...patch, updatedAt: new Date().toISOString() };
+      await writeJsonAtomic(filePath, { site: updated, nodes: current.nodes });
+      console.log(`[public-sites] updated site id=${id} slug=${updated.slug} patch=${JSON.stringify(patch)}`);
+      return updated;
+    });
+  }
+
+  async deletePublicSite(id: string): Promise<void> {
+    await fs.rm(this.publicSiteFilePath(id), { force: true });
+    console.log(`[public-sites] deleted site id=${id}`);
+  }
+
+  /**
+   * Submits one page for inclusion in a public site — creates a fresh
+   * pending node, or (if this exact page was already submitted to this
+   * same site before, in *any* status — approved, rejected, or still
+   * pending) resets that existing node back to pending instead of
+   * creating a duplicate. Lets a rejected submission be revised and
+   * resent, or an already-approved page be resubmitted after an edit,
+   * without the moderation queue accumulating stale duplicates of the
+   * same page.
+   */
+  async submitPageToPublicSite(
+    siteId: string,
+    input: { ownerId: string; projectId: string; pageId: string; parentId: string | null; submittedBy: string },
+  ): Promise<PublicNode> {
+    const filePath = this.publicSiteFilePath(siteId);
+    return lockManager.run(filePath, async () => {
+      const current = await this.readPublicSiteFile(siteId);
+      const now = new Date().toISOString();
+      const existingIdx = current.nodes.findIndex(
+        (n) => n.ownerId === input.ownerId && n.projectId === input.projectId && n.pageId === input.pageId,
+      );
+
+      let node: PublicNode;
+      let nodes: PublicNode[];
+      if (existingIdx >= 0) {
+        const existing = current.nodes[existingIdx]!;
+        node = {
+          ...existing,
+          parentId: input.parentId,
+          status: 'pending',
+          submittedBy: input.submittedBy,
+          submittedAt: now,
+          moderatedBy: null,
+          moderatedAt: null,
+          rejectionReason: null,
+        };
+        nodes = current.nodes.map((n, i) => (i === existingIdx ? node : n));
+      } else {
+        node = {
+          id: randomUUID(),
+          ownerId: input.ownerId,
+          projectId: input.projectId,
+          pageId: input.pageId,
+          parentId: input.parentId,
+          order: Date.now(),
+          status: 'pending',
+          submittedBy: input.submittedBy,
+          submittedAt: now,
+          moderatedBy: null,
+          moderatedAt: null,
+          rejectionReason: null,
+        };
+        nodes = [...current.nodes, node];
+      }
+
+      await writeJsonAtomic(filePath, { site: current.site, nodes });
+      console.log(
+        `[public-sites] submitted page site=${siteId} node=${node.id} page=${input.ownerId}/${input.projectId}/${input.pageId} by=${input.submittedBy} (${existingIdx >= 0 ? 'resubmit' : 'new'})`,
+      );
+      return node;
+    });
+  }
+
+  /** Withdraws a submission entirely (not just rejecting it) — for either the original submitter taking it back, or a moderator removing a page from consideration/the tree altogether. Also detaches any children still pointing at this node (promotes them to top-level in the public tree) rather than leaving them referencing a parentId that no longer exists. */
+  async deletePublicNode(siteId: string, nodeId: string): Promise<void> {
+    const filePath = this.publicSiteFilePath(siteId);
+    return lockManager.run(filePath, async () => {
+      const current = await this.readPublicSiteFile(siteId);
+      const nodes = current.nodes.filter((n) => n.id !== nodeId).map((n) => (n.parentId === nodeId ? { ...n, parentId: null } : n));
+      await writeJsonAtomic(filePath, { site: current.site, nodes });
+      console.log(`[public-sites] deleted node site=${siteId} node=${nodeId}`);
+    });
+  }
+
+  async moderatePublicNode(
+    siteId: string,
+    nodeId: string,
+    input: { status: Extract<PublicNodeStatus, 'approved' | 'rejected'>; moderatedBy: string; rejectionReason?: string | null },
+  ): Promise<PublicNode> {
+    const filePath = this.publicSiteFilePath(siteId);
+    return lockManager.run(filePath, async () => {
+      const current = await this.readPublicSiteFile(siteId);
+      const idx = current.nodes.findIndex((n) => n.id === nodeId);
+      if (idx === -1) throw new FsEngineError(`Public node not found: ${nodeId}`, 'NOT_FOUND');
+      const target = current.nodes[idx]!;
+      const updated: PublicNode = {
+        ...target,
+        status: input.status,
+        moderatedBy: input.moderatedBy,
+        moderatedAt: new Date().toISOString(),
+        rejectionReason: input.status === 'rejected' ? (input.rejectionReason ?? null) : null,
+      };
+      const nodes = current.nodes.map((n, i) => (i === idx ? updated : n));
+      await writeJsonAtomic(filePath, { site: current.site, nodes });
+      console.log(`[public-sites] moderated node site=${siteId} node=${nodeId} status=${input.status} by=${input.moderatedBy}`);
+      return updated;
+    });
+  }
+
+  /**
+   * Moderator reordering/reparenting the tree. Not restricted to
+   * approved nodes only — there's no reason to force approving a
+   * submission first just to stage where it'll go once approved — but a
+   * pending or rejected node's position has no visible effect either
+   * way, since only approved nodes render in the public tree at all.
+   *
+   * Guards against creating a cycle (moving a node to become a
+   * descendant of itself) by walking up from the proposed new parent —
+   * a small, curated tree doesn't need this often, but a cycle would
+   * otherwise make the public tree's own rendering loop forever, an
+   * easy mistake in a drag-and-drop-adjacent UI to want caught here
+   * rather than trusted to the frontend alone.
+   */
+  async movePublicNode(siteId: string, nodeId: string, input: { parentId: string | null; order: number }): Promise<PublicNode> {
+    const filePath = this.publicSiteFilePath(siteId);
+    return lockManager.run(filePath, async () => {
+      const current = await this.readPublicSiteFile(siteId);
+      const idx = current.nodes.findIndex((n) => n.id === nodeId);
+      if (idx === -1) throw new FsEngineError(`Public node not found: ${nodeId}`, 'NOT_FOUND');
+
+      let cursor = input.parentId;
+      while (cursor) {
+        if (cursor === nodeId) {
+          throw new FsEngineError('Cannot move a node to become its own descendant', 'INVALID_INPUT');
+        }
+        cursor = current.nodes.find((n) => n.id === cursor)?.parentId ?? null;
+      }
+
+      const updated: PublicNode = { ...current.nodes[idx]!, parentId: input.parentId, order: input.order };
+      const nodes = current.nodes.map((n, i) => (i === idx ? updated : n));
+      await writeJsonAtomic(filePath, { site: current.site, nodes });
+      return updated;
+    });
   }
 
   // ---------------------------------------------------------------------
