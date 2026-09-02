@@ -5,6 +5,7 @@ import { X, History as HistoryIcon, Loader2, ChevronLeft } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '../lib/api';
 import type { HistorySnapshot, PageBlock, PageContent } from '../lib/types';
+import { BLOCK_TAG, BLOCK_CLASS } from '../lib/blockStyles';
 
 /**
  * Snapshot timestamps are stored as `2026-08-13T10-30-00-000Z` — colons
@@ -22,35 +23,79 @@ function formatSnapshotTime(raw: string): string {
 }
 
 /**
- * A lightweight, read-only rendering of one block for the preview pane —
- * not the real editor. Good enough to tell "is this the version I want",
- * not meant to be pixel-identical to the live document (list items don't
- * get real <ul>/<ol> wrapping, for instance — a manual bullet/number
- * prefix character is simpler and sufficient here).
+ * Read-only rendering of a full block list — history preview, moderation
+ * preview, and the public site page all just need "render these blocks
+ * looking like the real document", not the interactive editing behavior
+ * itself. Shares BLOCK_TAG/BLOCK_CLASS with the real editor (Editor.tsx)
+ * so callout backgrounds, code block styling, heading sizes etc. can't
+ * drift out of sync between the two the way they previously did (no
+ * callout background color at all here, a plain "• "/"– " text prefix
+ * for lists instead of a real hanging indent when a list item's text
+ * wraps to a second line).
  */
-function BlockPreview({ block }: { block: PageBlock }) {
+export function BlockListPreview({ blocks }: { blocks: PageBlock[] }) {
+  // Same per-consecutive-run numbering as Editor.tsx's own
+  // numberedListIndices — not memoized here (no useMemo import pulled in
+  // just for this), fine given a read-only preview's block count is
+  // small and this only runs once per render anyway, same cost either way.
+  const numberedListIndices = new Map<string, number>();
+  let counter = 0;
+  for (const b of blocks) {
+    if (b.type === 'numberedList') {
+      counter += 1;
+      numberedListIndices.set(b.id, counter);
+    } else {
+      counter = 0;
+    }
+  }
+
+  return (
+    <>
+      {blocks.map((block) => (
+        <BlockPreview key={block.id} block={block} numberedListIndex={numberedListIndices.get(block.id)} />
+      ))}
+    </>
+  );
+}
+
+function BlockPreview({ block, numberedListIndex }: { block: PageBlock; numberedListIndex?: number }) {
   if (block.type === 'divider') return <hr className="my-3 border-line/10" />;
   if (block.type === 'image') return <p className="mb-2 text-xs text-ink-faint">[Изображение{block.fileName ? `: ${block.fileName}` : ''}]</p>;
   if (block.type === 'file') return <p className="mb-2 text-xs text-ink-faint">[Файл{block.fileName ? `: ${block.fileName}` : ''}]</p>;
 
-  const prefix =
-    block.type === 'bulletList' ? '• ' : block.type === 'numberedList' ? '– ' : block.type === 'todo' ? (block.checked ? '☑ ' : '☐ ') : '';
-
-  return (
-    <p
-      className={clsx('mb-2', {
-        'text-2xl font-bold text-ink': block.type === 'heading1',
-        'text-xl font-bold text-ink': block.type === 'heading2',
-        'text-lg font-semibold text-ink': block.type === 'heading3',
-        'border-l-2 border-line/20 pl-3 italic text-ink-muted': block.type === 'callout',
-        'rounded bg-surface px-2 py-1.5 font-mono text-sm text-ink': block.type === 'code',
-        'text-sm text-ink': !['heading1', 'heading2', 'heading3', 'code'].includes(block.type),
-      })}
-    >
-      {prefix}
-      {block.type === 'code' ? block.content : <span dangerouslySetInnerHTML={{ __html: block.content }} />}
-    </p>
+  const Tag = BLOCK_TAG[block.type] as keyof JSX.IntrinsicElements;
+  const content = (
+    <Tag
+      className={clsx(
+        BLOCK_CLASS[block.type],
+        (block.type === 'bulletList' || block.type === 'numberedList') && 'list-none',
+        block.type === 'todo' && block.checked && 'text-ink-faint line-through',
+      )}
+      dangerouslySetInnerHTML={{ __html: block.content }}
+    />
   );
+
+  // Bullet/numbered/todo get the same flex marker-plus-content layout as
+  // the real editor — a proper hanging indent (the marker is its own
+  // flex item, not text glued onto the front of the content), not a
+  // plain "• " character prefix that leaves a wrapped second line
+  // flush with the marker instead of aligned with the first line's text.
+  if (block.type === 'bulletList' || block.type === 'numberedList' || block.type === 'todo') {
+    return (
+      <div className="mb-1 flex items-start gap-1">
+        {block.type === 'todo' && (
+          <input type="checkbox" checked={!!block.checked} disabled className="mt-2 h-4 w-4 shrink-0 accent-[rgb(var(--accent))]" />
+        )}
+        {block.type === 'numberedList' && (
+          <span className="mt-0.5 min-w-[1.5em] shrink-0 text-right text-[15px] leading-7 text-ink-muted">{numberedListIndex ?? 1}.</span>
+        )}
+        {block.type === 'bulletList' && <span className="mt-0.5 shrink-0 text-[15px] leading-7 text-ink-muted">•</span>}
+        {content}
+      </div>
+    );
+  }
+
+  return <div className="mb-1">{content}</div>;
 }
 
 export function PageHistoryDialog({
@@ -175,9 +220,7 @@ export function PageHistoryDialog({
             </div>
           ) : (
             <div className="mx-auto max-w-xl">
-              {previewContent.blocks.map((b) => (
-                <BlockPreview key={b.id} block={b} />
-              ))}
+              <BlockListPreview blocks={previewContent.blocks} />
               {previewContent.blocks.length === 0 && <p className="text-sm text-ink-faint">Пустая страница.</p>}
             </div>
           )}

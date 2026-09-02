@@ -25,7 +25,7 @@ export function tileSetsRoutes(engine: FsEngine) {
     '/:setName/:tileId',
     readLimiter,
     asyncRoute(async (req, res) => {
-      const resolved = await engine.resolveTile(req.params.setName, req.params.tileId);
+      const resolved = await engine.resolveTile(req.params.setName!, req.params.tileId!);
       if (!resolved) {
         return res.status(404).json({ error: 'Tile set or tile not found' });
       }

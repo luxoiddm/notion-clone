@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, Link2, Trash2 } from 'lucide-react';
-import { api } from '../lib/api';
+import { X, Link2, Trash2, Globe, Check } from 'lucide-react';
+import { api, publicSitesApi, type PublicSite } from '../lib/api';
 import type { PageMeta } from '../lib/types';
 
 type AccessLevel = 'read' | 'comment' | 'edit' | 'admin';
@@ -34,12 +34,40 @@ export function ShareDialog({
   const [level, setLevel] = useState<AccessLevel>('edit');
   const [isSaving, setIsSaving] = useState(false);
 
+  // "Публикация" section below — list of enabled public sites, each with
+  // its own submit button. Submitted this same session shows a checkmark
+  // (submittedIds); doesn't try to reflect any *prior* submission status
+  // from before this dialog opened — the backend's own resubmit-resets-
+  // to-pending behavior means clicking again is always the correct
+  // action regardless, so there's nothing lost by not tracking that here.
+  const [publicSites, setPublicSites] = useState<PublicSite[]>([]);
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [submittedIds, setSubmittedIds] = useState<Set<string>>(new Set());
+  const [publishError, setPublishError] = useState<string | null>(null);
+
   useEffect(() => {
     api
       .listUsersDirectory()
       .then((users) => setDirectory(users.filter((u) => u.id !== ownerId)))
       .catch(() => setDirectory([]));
+    publicSitesApi
+      .list()
+      .then(setPublicSites)
+      .catch(() => setPublicSites([]));
   }, [ownerId]);
+
+  const submitToPublicSite = async (siteId: string) => {
+    setSubmittingId(siteId);
+    setPublishError(null);
+    try {
+      await publicSitesApi.submit(siteId, { ownerId, projectId, pageId, parentId: null });
+      setSubmittedIds((prev) => new Set(prev).add(siteId));
+    } catch (err) {
+      setPublishError(err instanceof Error ? err.message : 'Не удалось отправить на публикацию');
+    } finally {
+      setSubmittingId(null);
+    }
+  };
 
   const persist = async (next: PageMeta['sharing']) => {
     setIsSaving(true);
@@ -142,6 +170,46 @@ export function ShareDialog({
             </div>
           ))}
         </div>
+
+        {publicSites.length > 0 && (
+          <div className="mt-4 border-t border-line/10 pt-4">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">Публикация</p>
+            <p className="mb-2 text-xs text-ink-muted">
+              Страница появится по выбранному адресу после того, как модератор её рассмотрит и одобрит.
+            </p>
+            {publishError && <p className="mb-2 text-xs text-red-500">{publishError}</p>}
+            <div className="space-y-1">
+              {publicSites.map((site) => {
+                const isSubmitted = submittedIds.has(site.id);
+                return (
+                  <button
+                    key={site.id}
+                    type="button"
+                    onClick={() => !isSubmitted && void submitToPublicSite(site.id)}
+                    disabled={submittingId === site.id || isSubmitted}
+                    className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm ${
+                      isSubmitted ? 'text-ink-faint' : 'text-ink hover:bg-surface-hover'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Globe size={14} className="text-ink-muted" />
+                      {site.title}
+                      <span className="text-xs text-ink-faint">/{site.slug}</span>
+                    </span>
+                    {isSubmitted ? (
+                      <span className="flex items-center gap-1 text-xs text-green-600">
+                        <Check size={13} />
+                        Отправлено
+                      </span>
+                    ) : (
+                      <span className="text-xs text-ink-muted">{submittingId === site.id ? 'Отправка...' : 'Отправить в публикацию'}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

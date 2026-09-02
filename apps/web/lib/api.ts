@@ -1,4 +1,4 @@
-import type { HistorySnapshot, PageContent, PageMeta, PageNode } from './types';
+import type { HistorySnapshot, PageBlock, PageContent, PageMeta, PageNode } from './types';
 
 class ApiError extends Error {
   constructor(message: string, public status: number) {
@@ -147,6 +147,12 @@ export const api = {
       body: JSON.stringify({ icon }),
     }),
 
+  updatePageCover: (userId: string, projectId: string, pageId: string, coverImage: string | null) =>
+    request<PageMeta>(`/storage/${userId}/${projectId}/pages/${pageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ coverImage }),
+    }),
+
   updatePageTags: (userId: string, projectId: string, pageId: string, tags: string[]) =>
     request<PageMeta>(`/storage/${userId}/${projectId}/pages/${pageId}`, {
       method: 'PATCH',
@@ -216,7 +222,78 @@ export interface AdminUser {
   role: 'Admin' | 'Team-Lead' | 'Member' | 'Guest';
   email: string | null;
   createdAt: string;
+  enabled: boolean;
 }
+
+export interface PublicSite {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PublicNodeStatus = 'pending' | 'approved' | 'rejected';
+
+export interface PublicNode {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  pageId: string;
+  parentId: string | null;
+  order: number;
+  status: PublicNodeStatus;
+  submittedBy: string;
+  submittedAt: string;
+  moderatedBy: string | null;
+  moderatedAt: string | null;
+  rejectionReason: string | null;
+}
+
+/** What the moderation detail endpoint actually returns — PublicNode plus the resolved page title/icon (or pageMissing: true if the underlying page is gone) needed to show something meaningful in the moderation queue and tree editor. */
+export interface EnrichedPublicNode extends PublicNode {
+  pageTitle: string | null;
+  pageIcon: string | null;
+  pageMissing: boolean;
+}
+
+/** Site management + moderation — Admin or Team-Lead (backend checks the minimum role, not "Admin only"), kept separate from adminApi since that name implies Admin-only operations specifically. */
+export const moderationApi = {
+  listPublicSites: () => request<PublicSite[]>('/moderation/public-sites'),
+
+  createPublicSite: (input: { slug: string; title: string; description?: string }) =>
+    request<PublicSite>('/moderation/public-sites', { method: 'POST', body: JSON.stringify(input) }),
+
+  getPublicSite: (id: string) => request<{ site: PublicSite; nodes: EnrichedPublicNode[] }>(`/moderation/public-sites/${id}`),
+
+  updatePublicSite: (id: string, patch: { title?: string; description?: string; enabled?: boolean }) =>
+    request<PublicSite>(`/moderation/public-sites/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  deletePublicSite: (id: string) => request<void>(`/moderation/public-sites/${id}`, { method: 'DELETE' }),
+
+  moderateNode: (siteId: string, nodeId: string, input: { status: 'approved' | 'rejected'; rejectionReason?: string }) =>
+    request<PublicNode>(`/moderation/public-sites/${siteId}/nodes/${nodeId}/moderate`, { method: 'POST', body: JSON.stringify(input) }),
+
+  moveNode: (siteId: string, nodeId: string, input: { parentId: string | null; order: number }) =>
+    request<PublicNode>(`/moderation/public-sites/${siteId}/nodes/${nodeId}/move`, { method: 'PATCH', body: JSON.stringify(input) }),
+
+  deleteNode: (siteId: string, nodeId: string) => request<void>(`/moderation/public-sites/${siteId}/nodes/${nodeId}`, { method: 'DELETE' }),
+
+  getNodeContent: (siteId: string, nodeId: string) =>
+    request<{ title: string; icon: string | null; blocks: PageBlock[] }>(`/moderation/public-sites/${siteId}/nodes/${nodeId}/content`),
+};
+
+/** For any authenticated user submitting one of their own (or shared-with-edit) pages to a public site — distinct from moderationApi's own methods, which require Admin or Team-Lead. */
+export const publicSitesApi = {
+  list: () => request<PublicSite[]>('/public-sites'),
+
+  submit: (siteId: string, input: { ownerId: string; projectId: string; pageId: string; parentId?: string | null }) =>
+    request<PublicNode>(`/public-sites/${siteId}/submit`, { method: 'POST', body: JSON.stringify(input) }),
+
+  withdraw: (siteId: string, nodeId: string) => request<void>(`/public-sites/${siteId}/nodes/${nodeId}`, { method: 'DELETE' }),
+};
 
 export const adminApi = {
   listUsers: () => request<AdminUser[]>('/admin/users'),
@@ -227,7 +304,7 @@ export const adminApi = {
       body: JSON.stringify(input),
     }),
 
-  updateUser: (userId: string, patch: { displayName?: string; role?: AdminUser['role'] }) =>
+  updateUser: (userId: string, patch: { displayName?: string; role?: AdminUser['role']; enabled?: boolean }) =>
     request<AdminUser>(`/admin/users/${userId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
   deleteUser: (userId: string) => request<void>(`/admin/users/${userId}`, { method: 'DELETE' }),

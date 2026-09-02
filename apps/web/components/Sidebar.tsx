@@ -369,7 +369,9 @@ function VirtualizedTree({
     <div
       className="relative h-full overflow-y-auto"
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-      ref={(el) => el && setViewportHeight(el.clientHeight)}
+      ref={(el) => {
+        if (el) setViewportHeight(el.clientHeight);
+      }}
     >
       <div style={{ height: flat.length * ROW_HEIGHT, position: 'relative' }}>
         {visible.map(({ node, depth }, i) => (

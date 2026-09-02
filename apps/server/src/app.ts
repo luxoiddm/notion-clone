@@ -15,6 +15,7 @@ import { filesRoutes } from './routes/files.routes.js';
 import { webrtcRoutes } from './routes/webrtc.routes.js';
 import { siteRoutes } from './routes/site.routes.js';
 import { tileSetsRoutes } from './routes/tileSets.routes.js';
+import { moderationPublicSitesRoutes, publicSitesSubmitRoutes, publicSitesReadRoutes } from './routes/publicSites.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 export interface AppDeps {
@@ -53,6 +54,9 @@ export function createApp({ auth, fs, chat, io, webOrigin, version }: AppDeps) {
   app.use('/api/webrtc', webrtcRoutes(auth));
   app.use('/api/site-settings', siteRoutes(fs, version));
   app.use('/api/tile-sets', tileSetsRoutes(fs));
+  app.use('/api/moderation/public-sites', moderationPublicSitesRoutes(auth, fs));
+  app.use('/api/public-sites', publicSitesSubmitRoutes(auth, fs));
+  app.use('/api/public', publicSitesReadRoutes(fs, auth));
 
   // Centralized error handler — must be registered last.
   app.use(errorHandler);

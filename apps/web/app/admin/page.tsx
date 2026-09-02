@@ -154,6 +154,7 @@ function AdminPanel() {
               <th className="px-4 py-2 font-medium">Имя</th>
               <th className="px-4 py-2 font-medium">Email</th>
               <th className="px-4 py-2 font-medium">Роль</th>
+              <th className="px-4 py-2 font-medium">Статус</th>
               <th className="px-4 py-2 font-medium">Создан</th>
               <th className="px-4 py-2 font-medium text-right">Действия</th>
             </tr>
@@ -161,13 +162,13 @@ function AdminPanel() {
           <tbody>
             {users === null ? (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-ink-muted">
+                <td colSpan={6} className="px-4 py-6 text-center text-ink-muted">
                   Загрузка...
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-ink-muted">
+                <td colSpan={6} className="px-4 py-6 text-center text-ink-muted">
                   Пользователей пока нет.
                 </td>
               </tr>
@@ -390,6 +391,18 @@ function UserRow({
     }
   };
 
+  const toggleEnabled = async () => {
+    setIsBusy(true);
+    try {
+      await adminApi.updateUser(target.id, { enabled: !target.enabled });
+      onChanged();
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Не удалось обновить', 'error');
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   return (
     <tr className="border-t border-line/10">
       <td className="px-4 py-2">
@@ -412,6 +425,19 @@ function UserRow({
         ) : (
           target.role
         )}
+      </td>
+      <td className="px-4 py-2">
+        <button
+          type="button"
+          onClick={() => void toggleEnabled()}
+          disabled={isBusy || (isSelf && target.enabled)}
+          title={isSelf && target.enabled ? 'Нельзя отключить самого себя' : undefined}
+          className={`rounded-full px-2 py-0.5 text-xs disabled:opacity-50 ${
+            target.enabled ? 'bg-green-500/15 text-green-600' : 'bg-surface-hover text-ink-faint'
+          }`}
+        >
+          {target.enabled ? 'Включён' : 'Выключен'}
+        </button>
       </td>
       <td className="px-4 py-2 text-ink-muted">{new Date(target.createdAt).toLocaleDateString('ru-RU')}</td>
       <td className="px-4 py-2">

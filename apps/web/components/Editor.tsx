@@ -1,6 +1,7 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BLOCK_TAG, BLOCK_CLASS } from '../lib/blockStyles';
 import {
   GripVertical,
   Plus,
@@ -12,12 +13,14 @@ import {
   FileText,
   Download,
   Image as ImageIcon,
+  ImagePlus,
   Paperclip,
   Loader2,
   Trash2,
   ChevronDown,
   FileSymlink,
   SquareCode,
+  type LucideIcon,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { PageBlock, PageBlockType } from '../lib/types';
@@ -25,6 +28,9 @@ import { randomUUID } from '../lib/uuid';
 import { withAuthToken, filesApi, type UserFileInfo } from '../lib/api';
 import { sanitizeInlineHtml } from '../lib/sanitize';
 import { PageIconPicker } from './PageIconPicker';
+import { PageCoverPicker } from './PageCoverPicker';
+import { useTheme } from 'next-themes';
+import { isCoverColor, resolveCoverColorHex, textColorForCover } from '../lib/coverColors';
 import { htmlToBlocks, plainTextToBlocks } from '../lib/pasteToBlocks';
 import { useToast } from './Toast';
 import { SlashMenu, SLASH_OPTIONS, filterSlashOptions } from './SlashMenu';
@@ -36,6 +42,10 @@ interface EditorProps {
   onTitleChange: (title: string) => void;
   icon: string | null;
   onIconChange: (icon: string | null) => void;
+  cover: string | null;
+  onCoverChange: (cover: string | null) => void;
+  /** Reuses the existing page-asset upload mechanism (same one image/file blocks already use) — returns the uploaded image's URL, which the caller then passes to onCoverChange itself. Kept as a separate step (upload, then set) rather than one combined call, matching how block-level image uploads already work in this file. */
+  uploadCoverImage: (file: File) => Promise<string>;
   blocks: PageBlock[];
   onBlocksChange: (updater: PageBlock[] | ((prev: PageBlock[]) => PageBlock[])) => void;
   readOnly?: boolean;
@@ -43,38 +53,6 @@ interface EditorProps {
   /** Called when a page-reference link (inserted via the "attach document" toolbar button) is opened — Ctrl/Cmd+click, matching how a regular link already opens. */
   onOpenPageRef: (ownerId: string, projectId: string, pageId: string) => void;
 }
-
-const BLOCK_TAG: Record<PageBlockType, string> = {
-  paragraph: 'p',
-  heading1: 'h1',
-  heading2: 'h2',
-  heading3: 'h3',
-  bulletList: 'li',
-  numberedList: 'li',
-  todo: 'p',
-  code: 'code',
-  callout: 'p',
-  table: 'p',
-  image: 'p',
-  file: 'p',
-  divider: 'div',
-};
-
-const BLOCK_CLASS: Record<PageBlockType, string> = {
-  paragraph: 'text-[15px] leading-7',
-  heading1: 'text-3xl font-bold leading-tight mt-6',
-  heading2: 'text-2xl font-semibold leading-snug mt-5',
-  heading3: 'text-xl font-semibold leading-snug mt-4',
-  bulletList: 'text-[15px] leading-7',
-  numberedList: 'text-[15px] leading-7',
-  todo: 'text-[15px] leading-7',
-  code: 'font-mono text-sm bg-surface-hover rounded-md p-3 block whitespace-pre-wrap',
-  callout: 'text-[15px] leading-7 bg-accent-soft/60 border border-accent/20 rounded-md p-3',
-  table: 'text-[15px] leading-7',
-  image: '',
-  file: '',
-  divider: 'border-t border-line/10 my-4',
-};
 
 // Block types that need a file (picked from personal storage or uploaded
 // fresh) rather than typed text — selecting them from the slash menu opens
@@ -348,11 +326,29 @@ function blockToPlainText(block: PageBlock): string {
 }
 
 
-export function Editor({ title, onTitleChange, icon, onIconChange, blocks, onBlocksChange, readOnly = false, currentUserId, onOpenPageRef }: EditorProps) {
+export function Editor({
+  title,
+  onTitleChange,
+  icon,
+  onIconChange,
+  cover,
+  onCoverChange,
+  uploadCoverImage,
+  blocks,
+  onBlocksChange,
+  readOnly = false,
+  currentUserId,
+  onOpenPageRef,
+}: EditorProps) {
   const [slashState, setSlashState] = useState<{ blockId: string; query: string; position: { top: number; left: number } } | null>(null);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [dragOverAssets, setDragOverAssets] = useState(false);
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null);
+  const [coverPickerOpen, setCoverPickerOpen] = useState(false);
+  const coverButtonRef = useRef<HTMLButtonElement>(null);
+  const { resolvedTheme } = useTheme();
+  const isDarkTheme = resolvedTheme === 'dark';
+  const coverTextColor: 'white' | 'dark' = cover && isCoverColor(cover) ? textColorForCover(resolveCoverColorHex(cover, isDarkTheme)) : 'white';
   /**
    * Whole-document raw-HTML source view — like GitLab's "view source"
    * toggle for a file, not scoped to a single block. `sourceText` is a
@@ -1168,20 +1164,101 @@ export function Editor({ title, onTitleChange, icon, onIconChange, blocks, onBlo
         </div>
       )}
 
-      <div className="clear-both">
-        {(icon || !readOnly) && (
-          <div className="float-left mb-1 mr-4">
-            <PageIconPicker icon={icon} onChange={onIconChange} readOnly={readOnly} size={128} />
+      {cover ? (
+        <div className="relative -mx-6 -mt-10 mb-6 h-56 overflow-hidden sm:-mx-16 sm:h-64">
+          <div
+            className="absolute inset-0"
+            style={
+              isCoverColor(cover)
+                ? { backgroundColor: resolveCoverColorHex(cover, isDarkTheme) }
+                : { backgroundImage: `url(${withAuthToken(cover)})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+            }
+          />
+          {/* Dark gradient overlay only for image covers — keeps the
+              title legible regardless of what an uploaded photo's own
+              brightness happens to be, without needing to inspect the
+              image itself. Solid colors don't get this at all: the
+              light presets (sand, cloud, ...) rely on switching to dark
+              title text instead (see coverTextColor below) — a black
+              gradient on top would both look wrong on a light color and
+              fight against that dark text's own contrast. */}
+          {!isCoverColor(cover) && <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />}
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={() => setCoverPickerOpen((v) => !v)}
+              ref={coverButtonRef}
+              className={clsx(
+                'no-print absolute right-3 top-3 z-10 rounded-md px-2.5 py-1.5 text-xs backdrop-blur-sm',
+                coverTextColor === 'dark' ? 'bg-white/60 text-ink hover:bg-white/80' : 'bg-black/30 text-white hover:bg-black/50',
+              )}
+            >
+              Изменить обложку
+            </button>
+          )}
+          {coverPickerOpen && (
+            <PageCoverPicker
+              cover={cover}
+              onChange={onCoverChange}
+              uploadCoverImage={uploadCoverImage}
+              onClose={() => setCoverPickerOpen(false)}
+              anchorRef={coverButtonRef}
+            />
+          )}
+          <div className="clear-both absolute inset-x-0 bottom-0 px-6 pb-5 sm:px-16">
+            {(icon || !readOnly) && (
+              <div className="float-left mb-1 mr-4">
+                <PageIconPicker icon={icon} onChange={onIconChange} readOnly={readOnly} size={96} />
+              </div>
+            )}
+            <EditableTitle
+              title={title}
+              onTitleChange={onTitleChange}
+              readOnly={readOnly}
+              onEnter={() => focusBlock(blocks[0]?.id ?? '')}
+              onCover={coverTextColor}
+            />
+            <div className="clear-both" />
           </div>
-        )}
-        <EditableTitle
-          title={title}
-          onTitleChange={onTitleChange}
-          readOnly={readOnly}
-          onEnter={() => focusBlock(blocks[0]?.id ?? '')}
-        />
-        <div className="clear-both" />
-      </div>
+        </div>
+      ) : (
+        <>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={() => setCoverPickerOpen((v) => !v)}
+              ref={coverButtonRef}
+              className="no-print relative mb-3 flex items-center gap-1.5 text-xs text-ink-faint hover:text-ink"
+            >
+              <ImagePlus size={13} />
+              Добавить обложку
+              {coverPickerOpen && (
+                <PageCoverPicker
+                  cover={cover}
+                  onChange={onCoverChange}
+                  uploadCoverImage={uploadCoverImage}
+                  onClose={() => setCoverPickerOpen(false)}
+                  anchorRef={coverButtonRef}
+                />
+              )}
+            </button>
+          )}
+          <div className="clear-both">
+            {(icon || !readOnly) && (
+              <div className="float-left mb-1 mr-4">
+                <PageIconPicker icon={icon} onChange={onIconChange} readOnly={readOnly} size={128} />
+              </div>
+            )}
+            <EditableTitle
+              title={title}
+              onTitleChange={onTitleChange}
+              readOnly={readOnly}
+              onEnter={() => focusBlock(blocks[0]?.id ?? '')}
+            />
+            <div className="clear-both" />
+          </div>
+        </>
+      )}
 
       {isSourceView ? (
         <textarea
@@ -1362,11 +1439,14 @@ function EditableTitle({
   onTitleChange,
   readOnly,
   onEnter,
+  onCover,
 }: {
   title: string;
   onTitleChange: (title: string) => void;
   readOnly?: boolean;
   onEnter: () => void;
+  /** When set, this title renders overlaid on a cover banner (see the cover-image/color block above it) rather than the plain page background — 'white' for a dark cover or any image (the gradient overlay guarantees a dark-enough area), 'dark' for a light solid-color preset. Omitted entirely (undefined) for the plain no-cover case. */
+  onCover?: 'white' | 'dark';
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -1409,7 +1489,12 @@ function EditableTitle({
       }
       data-placeholder={title === '' ? 'Untitled' : undefined}
       style={{ whiteSpace: 'pre-wrap' }}
-      className="min-h-[1.2em] break-words text-4xl font-bold text-ink outline-none empty:before:text-ink-faint empty:before:content-[attr(data-placeholder)]"
+      className={clsx(
+        'min-h-[1.2em] break-words text-4xl font-bold outline-none',
+        onCover === 'white'
+          ? 'text-white empty:before:text-white/60 empty:before:content-[attr(data-placeholder)]'
+          : 'text-ink empty:before:text-ink-faint empty:before:content-[attr(data-placeholder)]',
+      )}
     />
   );
 }
@@ -1419,7 +1504,7 @@ function ToolbarButton({
   label,
   onClick,
 }: {
-  icon: React.ComponentType<{ size?: number }>;
+  icon: LucideIcon;
   label: string;
   onClick: () => void;
 }) {

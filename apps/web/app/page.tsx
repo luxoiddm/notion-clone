@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getLastLocation, saveLastLocation } from '../lib/lastLocation';
-import { Cloud, CloudOff, Loader2, Share2, Users, ShieldCheck, LogOut, FolderOpen, MessageSquare, PanelRight, Menu } from 'lucide-react';
+import { Cloud, CloudOff, Loader2, Share2, Users, ShieldCheck, LogOut, FolderOpen, MessageSquare, PanelRight, Menu, Globe } from 'lucide-react';
 import { useSession } from '../components/SessionProvider';
 import { useUserStore } from '../store/useUserStore';
 import { usePages } from '../hooks/usePages';
@@ -320,6 +320,17 @@ function Workspace() {
               </Link>
             )}
 
+            {(user.role === 'Admin' || user.role === 'Team-Lead') && (
+              <Link
+                href="/moderation"
+                title="Модерация"
+                className="flex items-center gap-1.5 rounded-md border border-line/10 px-2 py-1 text-xs text-ink-muted hover:bg-surface-hover hover:text-ink sm:px-2.5"
+              >
+                <Globe size={12} />
+                <span className="hidden sm:inline">Модерация</span>
+              </Link>
+            )}
+
             {activePageId && isOwnDocument && (
               <button
                 type="button"
@@ -374,6 +385,9 @@ function Workspace() {
                 onTitleChange={doc.setTitle}
                 icon={doc.meta?.icon ?? null}
                 onIconChange={(icon) => void doc.setIcon(icon)}
+                cover={doc.meta?.coverImage ?? null}
+                onCoverChange={(cover) => void doc.setCover(cover)}
+                uploadCoverImage={doc.uploadAsset}
                 blocks={doc.blocks}
                 onBlocksChange={doc.setBlocks}
                 readOnly={!canEdit}

@@ -18,6 +18,7 @@ export interface UseDocumentResult {
   setBlocks: (updater: PageBlock[] | ((prev: PageBlock[]) => PageBlock[])) => void;
   setTitle: (title: string) => void;
   setIcon: (icon: string | null) => Promise<void>;
+  setCover: (coverImage: string | null) => Promise<void>;
   setTags: (tags: string[]) => Promise<void>;
   /** Re-fetches the current page's content/meta from the server — for when it changed server-side without the local edit flow being involved (restoring a history snapshot), where pageId itself doesn't change and so the normal load-on-pageId-change effect never fires again on its own. */
   reload: () => Promise<void>;
@@ -212,6 +213,21 @@ export function useDocument(userId: string | null, projectId: string | null, pag
     [userId, projectId, pageId],
   );
 
+  const setCover = useCallback(
+    async (coverImage: string | null) => {
+      if (!userId || !projectId || !pageId) return;
+      setSaveStatus('saving');
+      try {
+        const updated = await api.updatePageCover(userId, projectId, pageId, coverImage);
+        setMeta(updated);
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('error');
+      }
+    },
+    [userId, projectId, pageId],
+  );
+
   const setTags = useCallback(
     async (tags: string[]) => {
       if (!userId || !projectId || !pageId) return;
@@ -247,6 +263,7 @@ export function useDocument(userId: string | null, projectId: string | null, pag
     setBlocks,
     setTitle,
     setIcon,
+    setCover,
     setTags,
     reload: load,
     flushSave,

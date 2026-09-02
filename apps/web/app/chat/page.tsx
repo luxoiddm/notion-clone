@@ -12,6 +12,7 @@ import { ChatWindow } from '../../components/ChatWindow';
 import { useCall } from '../../components/CallProvider';
 import { CallGrid } from '../../components/CallGrid';
 import { CallControls } from '../../components/CallControls';
+import { MobilePrivateCallScreen } from '../../components/MobilePrivateCallScreen';
 import { Avatar } from '../../components/Avatar';
 import { ToastProvider } from '../../components/Toast';
 
@@ -292,7 +293,7 @@ function ChatPageContent() {
             )}
 
             {activeCall?.chatId === selectedChat.id && (
-              <div className="border-b border-line/10 bg-surface-panel/50">
+              <div className={`border-b border-line/10 bg-surface-panel/50 ${selectedChat.kind === 'private' ? 'hidden md:block' : ''}`}>
                 <div className="max-h-80 overflow-y-auto p-3">
                   <CallGrid
                     tiles={[
@@ -322,6 +323,22 @@ function ChatPageContent() {
                   onLeave={leaveCall}
                 />
               </div>
+            )}
+
+            {activeCall?.chatId === selectedChat.id && selectedChat.kind === 'private' && (
+              <MobilePrivateCallScreen
+                remoteStream={activeCall.remoteStreams[0]?.stream ?? null}
+                remoteLabel={chatTitle(selectedChat, user.id, usersById)}
+                localStream={activeCall.isScreenSharing ? activeCall.screenStream : activeCall.localStream}
+                localCameraOff={!activeCall.cameraEnabled}
+                isScreenSharing={activeCall.isScreenSharing}
+                micEnabled={activeCall.micEnabled}
+                cameraEnabled={activeCall.cameraEnabled}
+                onToggleMic={toggleMic}
+                onToggleCamera={toggleCamera}
+                onToggleScreenShare={() => void toggleScreenShare()}
+                onLeave={leaveCall}
+              />
             )}
 
             <ChatWindow

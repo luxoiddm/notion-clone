@@ -40,7 +40,7 @@ export function filesRoutes(auth: AuthService, engine: FsEngine) {
     '/:fileName',
     documentWriteLimiter,
     asyncRoute(async (req, res) => {
-      await engine.deleteUserFile(req.user!.id, req.params.fileName);
+      await engine.deleteUserFile(req.user!.id, req.params.fileName!);
       res.status(204).end();
     }),
   );
@@ -58,7 +58,7 @@ export function filesRoutes(auth: AuthService, engine: FsEngine) {
     '/serve/:userId/:fileName',
     readLimiter,
     asyncRoute(async (req, res) => {
-      const filePath = engine.getUserFileAbsolutePath(req.params.userId, req.params.fileName);
+      const filePath = engine.getUserFileAbsolutePath(req.params.userId!, req.params.fileName!);
       res.sendFile(filePath);
     }),
   );

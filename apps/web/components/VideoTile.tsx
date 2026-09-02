@@ -9,6 +9,7 @@ export function VideoTile({
   label,
   cameraOff,
   micOff,
+  fill,
 }: {
   stream: MediaStream | null;
   muted?: boolean;
@@ -22,6 +23,8 @@ export function VideoTile({
    */
   cameraOff?: boolean;
   micOff?: boolean;
+  /** Fills the parent container (`h-full w-full`) instead of the default fixed `h-40` box — for contexts where the *parent* dictates size (the full-screen remote view and PiP thumbnail in the mobile private-call layout), not this component's own fixed dimensions. */
+  fill?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -32,7 +35,13 @@ export function VideoTile({
   const showPlaceholder = !stream || cameraOff;
 
   return (
-    <div className="relative aspect-video h-40 shrink-0 overflow-hidden rounded-lg border border-line/10 bg-surface-panel">
+    <div
+      className={
+        fill
+          ? 'relative h-full w-full overflow-hidden bg-surface-panel'
+          : 'relative aspect-video h-40 shrink-0 overflow-hidden rounded-lg border border-line/10 bg-surface-panel'
+      }
+    >
       {/* Always mounted, even while the placeholder below covers it —
           conditionally swapping this <video> in and out of the tree
           (e.g. only rendering it when !showPlaceholder) would unmount and

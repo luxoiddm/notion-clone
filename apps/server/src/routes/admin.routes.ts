@@ -31,16 +31,21 @@ export function adminRoutes(auth: AuthService, engine: FsEngine) {
   router.patch(
     '/users/:userId',
     asyncRoute(async (req, res) => {
-      const { displayName, role } = req.body as {
+      const { displayName, role, enabled } = req.body as {
         displayName?: string;
         role?: 'Admin' | 'Team-Lead' | 'Member' | 'Guest';
+        enabled?: boolean;
       };
-      if (displayName === undefined && role === undefined) {
-        return res.status(400).json({ error: 'Nothing to update — provide displayName and/or role' });
+      if (displayName === undefined && role === undefined && enabled === undefined) {
+        return res.status(400).json({ error: 'Nothing to update — provide displayName, role and/or enabled' });
       }
-      const updated = await engine.updateUser(req.params.userId, {
+      if (enabled === false && req.params.userId! === req.user!.id) {
+        return res.status(400).json({ error: 'Нельзя отключить свой собственный аккаунт' });
+      }
+      const updated = await engine.updateUser(req.params.userId!, {
         ...(displayName !== undefined ? { displayName } : {}),
         ...(role !== undefined ? { role } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
       });
       res.json(updated);
     }),
@@ -49,10 +54,10 @@ export function adminRoutes(auth: AuthService, engine: FsEngine) {
   router.delete(
     '/users/:userId',
     asyncRoute(async (req, res) => {
-      if (req.params.userId === req.user!.id) {
+      if (req.params.userId! === req.user!.id) {
         return res.status(400).json({ error: 'Нельзя удалить свой собственный аккаунт' });
       }
-      await engine.deleteUser(req.params.userId);
+      await engine.deleteUser(req.params.userId!);
       res.status(204).end();
     }),
   );
@@ -63,13 +68,13 @@ export function adminRoutes(auth: AuthService, engine: FsEngine) {
     '/users/:userId/reset-password',
     asyncRoute(async (req, res) => {
       const credentials = await engine.getAllCredentials();
-      const entry = Object.entries(credentials).find(([, cred]) => cred.userId === req.params.userId);
+      const entry = Object.entries(credentials).find(([, cred]) => cred.userId === req.params.userId!);
       if (!entry) return res.status(404).json({ error: 'У пользователя нет учётных данных для сброса' });
 
       const [email] = entry;
       const temporaryPassword = randomBytes(9).toString('base64url');
       const passwordHash = await auth.hashPassword(temporaryPassword);
-      await engine.setCredential(email, req.params.userId, passwordHash);
+      await engine.setCredential(email, req.params.userId!, passwordHash);
 
       res.json({ temporaryPassword });
     }),
@@ -136,7 +141,7 @@ export function adminRoutes(auth: AuthService, engine: FsEngine) {
     '/site-settings/logo/:kind',
     uploadLogo.single('logo'),
     asyncRoute(async (req, res) => {
-      if (req.params.kind !== 'login' && req.params.kind !== 'header') {
+      if (req.params.kind! !== 'login' && req.params.kind! !== 'header') {
         return res.status(400).json({ error: 'kind must be "login" or "header"' });
       }
       if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -151,8 +156,8 @@ export function adminRoutes(auth: AuthService, engine: FsEngine) {
         return res.status(400).json({ error: 'Не удалось обработать изображение — убедитесь, что это картинка' });
       }
 
-      const logoUrl = await engine.saveSiteLogo(req.params.kind, resized);
-      const patch = req.params.kind === 'login' ? { loginLogoUrl: logoUrl } : { headerLogoUrl: logoUrl };
+      const logoUrl = await engine.saveSiteLogo(req.params.kind!, resized);
+      const patch = req.params.kind! === 'login' ? { loginLogoUrl: logoUrl } : { headerLogoUrl: logoUrl };
       const updated = await engine.updateSiteSettings(patch);
       res.json(updated);
     }),

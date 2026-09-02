@@ -41,6 +41,10 @@ export function authRoutes(auth: AuthService, fs: FsEngine) {
       }
 
       const profile = await fs.getUser(cred.userId);
+      if (!profile.enabled) {
+        console.warn(`[auth] Login rejected: account disabled (userId=${cred.userId})`);
+        return res.status(403).json({ error: 'This account has been disabled' });
+      }
       const payload = { sub: cred.userId, role: profile.role, displayName: profile.displayName };
       const accessToken = auth.signAccessToken(payload);
       const refreshToken = auth.signRefreshToken(payload);
@@ -65,7 +69,17 @@ export function authRoutes(auth: AuthService, fs: FsEngine) {
       if (!token) return res.status(401).json({ error: 'No refresh token' });
 
       const payload = auth.verifyRefreshToken(token);
-      const accessToken = auth.signAccessToken(payload);
+      // Re-checks enabled against the current profile on disk, not the
+      // refresh token's own (possibly stale) payload — otherwise
+      // disabling someone wouldn't actually take effect until their
+      // 15-minute access token expired on its own, and they'd just keep
+      // refreshing past that indefinitely with the still-valid cookie.
+      const profile = await fs.getUser(payload.sub);
+      if (!profile.enabled) {
+        res.clearCookie('refreshToken');
+        return res.status(403).json({ error: 'This account has been disabled' });
+      }
+      const accessToken = auth.signAccessToken({ sub: payload.sub, role: profile.role, displayName: profile.displayName });
       res.json({ accessToken });
     }),
   );

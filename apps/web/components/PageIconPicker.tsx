@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { PAGE_ICON_OPTIONS, isTileIconUrl } from '../lib/pageIcons';
 import { api } from '../lib/api';
 
@@ -17,7 +18,18 @@ export function PageIconPicker({
   size?: number;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  // Trigger button — kept separate from the dropdown itself now that the
+  // dropdown is portaled out. Position is computed from this ref's screen
+  // coordinates rather than relying on CSS position:absolute against the
+  // parent, which is what let the cover banner's own `overflow-hidden`
+  // (needed there for cropping the cover image) clip the bottom of this
+  // dropdown when it was open above a cover — same root cause the cover
+  // picker itself was fixed for in 1.33.3, same fix.
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  // null until the first layout pass computes it — nothing renders before
+  // then, avoiding a flash at the wrong (0,0) position.
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
 
   // "emoji" is always available; a tab per discovered tile set is added
   // once the list loads. Fetched lazily on first open, not on mount —
@@ -34,10 +46,28 @@ export function PageIconPicker({
     api.listTileSets().then(setTileSets).catch(() => setTileSets([]));
   }, [open, tileSets]);
 
+  useLayoutEffect(() => {
+    if (!open) {
+      setPosition(null);
+      return;
+    }
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) setPosition({ top: rect.bottom + 4, left: rect.left });
+    // Recomputed once per open, not on every scroll/resize — same
+    // short-lived-popover reasoning as PageCoverPicker.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Portal content lives outside the trigger's own DOM subtree, so the
+  // click-outside check needs to explicitly exclude the trigger button
+  // too — a portal breaks the parent-child relationship a plain
+  // ref.contains() on a shared wrapper used to rely on.
   useEffect(() => {
     if (!open) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (pickerRef.current?.contains(e.target as Node)) return;
+      if (buttonRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -46,8 +76,9 @@ export function PageIconPicker({
   const activeSet = tileSets?.find((s) => s.name === activeTab) ?? null;
 
   return (
-    <div ref={ref} className="relative inline-block">
+    <div className="relative inline-block">
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => !readOnly && setOpen((v) => !v)}
         disabled={readOnly}
@@ -63,8 +94,11 @@ export function PageIconPicker({
         )}
       </button>
 
-      {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 w-52 rounded-lg border border-line/10 bg-surface-panel p-2 shadow-panel">
+      {open && position && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={pickerRef}
+          style={{ position: 'fixed', top: position.top, left: position.left }}
+          className="z-50 w-52 rounded-lg border border-line/10 bg-surface-panel p-2 shadow-panel">
           {tileSets && tileSets.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1 border-b border-line/10 pb-2">
               <button
@@ -147,7 +181,8 @@ export function PageIconPicker({
               Сбросить
             </button>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

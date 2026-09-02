@@ -10,6 +10,7 @@ export function CallControls({
   onToggleCamera,
   onToggleScreenShare,
   onLeave,
+  variant = 'default',
 }: {
   micEnabled: boolean;
   cameraEnabled: boolean;
@@ -18,9 +19,17 @@ export function CallControls({
   onToggleCamera: () => void;
   onToggleScreenShare: () => void;
   onLeave: () => void;
+  /** 'overlay' — floating pill with no opaque background, for sitting directly on top of full-screen video (the mobile private-call layout) instead of the default bordered bar meant for the compact desktop layout, which needs its own contrast against the page background around it. */
+  variant?: 'default' | 'overlay';
 }) {
   return (
-    <div className="flex items-center justify-center gap-2 border-t border-line/10 bg-surface-panel px-4 py-2">
+    <div
+      className={
+        variant === 'overlay'
+          ? 'flex items-center justify-center gap-3 rounded-full bg-black/40 px-4 py-2.5 backdrop-blur-sm'
+          : 'flex items-center justify-center gap-2 border-t border-line/10 bg-surface-panel px-4 py-2'
+      }
+    >
       <button
         type="button"
         onClick={onToggleMic}

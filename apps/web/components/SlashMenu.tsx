@@ -12,13 +12,14 @@ import {
   Pilcrow,
   Image as ImageIcon,
   Paperclip,
+  type LucideIcon,
 } from 'lucide-react';
 import type { PageBlockType } from '../lib/types';
 
 export interface SlashOption {
   type: PageBlockType;
   label: string;
-  icon: React.ComponentType<{ size?: number }>;
+  icon: LucideIcon;
   keywords: string;
 }
 

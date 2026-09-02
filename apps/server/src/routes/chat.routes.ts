@@ -49,7 +49,7 @@ export function chatRoutes(auth: AuthService, chat: ChatEngine, io: RealtimeServ
     '/:chatId',
     readLimiter,
     asyncRoute(async (req, res) => {
-      const summary = await chat.getChatSummary(req.params.chatId);
+      const summary = await chat.getChatSummary(req.params.chatId!);
       if (!summary.memberIds.includes(req.user!.id)) return res.status(403).json({ error: 'Not a member of this chat' });
       res.json(summary);
     }),
@@ -62,8 +62,8 @@ export function chatRoutes(auth: AuthService, chat: ChatEngine, io: RealtimeServ
     documentWriteLimiter,
     asyncRoute(async (req, res) => {
       try {
-        await chat.deleteChat(req.params.chatId, req.user!.id);
-        emitChatDeleted(io, req.params.chatId);
+        await chat.deleteChat(req.params.chatId!, req.user!.id);
+        emitChatDeleted(io, req.params.chatId!);
         res.status(204).end();
       } catch (err) {
         res.status(mutationErrorStatus(err)).json({ error: errorMessage(err) });
@@ -109,10 +109,10 @@ export function chatRoutes(auth: AuthService, chat: ChatEngine, io: RealtimeServ
     '/:chatId/messages',
     readLimiter,
     asyncRoute(async (req, res) => {
-      const summary = await chat.getChatSummary(req.params.chatId);
+      const summary = await chat.getChatSummary(req.params.chatId!);
       if (!summary.memberIds.includes(req.user!.id)) return res.status(403).json({ error: 'Not a member of this chat' });
       const limit = Number(req.query.limit) || 50;
-      res.json(await chat.getRecentMessages(req.params.chatId, limit));
+      res.json(await chat.getRecentMessages(req.params.chatId!, limit));
     }),
   );
 
@@ -132,18 +132,18 @@ export function chatRoutes(auth: AuthService, chat: ChatEngine, io: RealtimeServ
       }
 
       const message = await chat.sendMessage({
-        chatId: req.params.chatId,
+        chatId: req.params.chatId!,
         authorId: req.user!.id,
         text,
         threadRootId,
         pageRef,
         attachment,
       });
-      emitChatMessage(io, req.params.chatId, message);
+      emitChatMessage(io, req.params.chatId!, message);
 
       if (threadRootId) {
-        const replyCount = await chat.getThreadReplyCount(req.params.chatId, threadRootId);
-        emitChatThreadCountUpdated(io, req.params.chatId, threadRootId, replyCount);
+        const replyCount = await chat.getThreadReplyCount(req.params.chatId!, threadRootId);
+        emitChatThreadCountUpdated(io, req.params.chatId!, threadRootId, replyCount);
       }
 
       res.status(201).json(message);
@@ -158,8 +158,8 @@ export function chatRoutes(auth: AuthService, chat: ChatEngine, io: RealtimeServ
       if (!text || !text.trim()) return res.status(400).json({ error: 'text is required' });
 
       try {
-        const message = await chat.editMessage(req.params.chatId, req.params.messageId, req.user!.id, text);
-        emitChatMessageUpdated(io, req.params.chatId, message);
+        const message = await chat.editMessage(req.params.chatId!, req.params.messageId!, req.user!.id, text);
+        emitChatMessageUpdated(io, req.params.chatId!, message);
         res.json(message);
       } catch (err) {
         res.status(mutationErrorStatus(err)).json({ error: errorMessage(err) });
@@ -172,17 +172,17 @@ export function chatRoutes(auth: AuthService, chat: ChatEngine, io: RealtimeServ
     documentWriteLimiter,
     asyncRoute(async (req, res) => {
       try {
-        const result = await chat.deleteMessage(req.params.chatId, req.params.messageId, req.user!.id);
+        const result = await chat.deleteMessage(req.params.chatId!, req.params.messageId!, req.user!.id);
 
         if (result.parentThreadUpdate) {
-          emitChatThreadCountUpdated(io, req.params.chatId, result.parentThreadUpdate.threadRootId, result.parentThreadUpdate.replyCount);
+          emitChatThreadCountUpdated(io, req.params.chatId!, result.parentThreadUpdate.threadRootId, result.parentThreadUpdate.replyCount);
         }
 
         if (result.message === null) {
-          emitChatMessageDeleted(io, req.params.chatId, req.params.messageId);
-          return res.json({ id: req.params.messageId, fullyDeleted: true });
+          emitChatMessageDeleted(io, req.params.chatId!, req.params.messageId!);
+          return res.json({ id: req.params.messageId!, fullyDeleted: true });
         }
-        emitChatMessageUpdated(io, req.params.chatId, result.message);
+        emitChatMessageUpdated(io, req.params.chatId!, result.message);
         res.json(result.message);
       } catch (err) {
         res.status(mutationErrorStatus(err)).json({ error: errorMessage(err) });
@@ -203,8 +203,8 @@ export function chatRoutes(auth: AuthService, chat: ChatEngine, io: RealtimeServ
       if (!emoji) return res.status(400).json({ error: 'emoji is required' });
 
       try {
-        const message = await chat.toggleReaction(req.params.chatId, req.params.messageId, req.user!.id, emoji);
-        emitChatMessageUpdated(io, req.params.chatId, message);
+        const message = await chat.toggleReaction(req.params.chatId!, req.params.messageId!, req.user!.id, emoji);
+        emitChatMessageUpdated(io, req.params.chatId!, message);
         res.json(message);
       } catch (err) {
         res.status(mutationErrorStatus(err)).json({ error: errorMessage(err) });
@@ -216,9 +216,9 @@ export function chatRoutes(auth: AuthService, chat: ChatEngine, io: RealtimeServ
     '/:chatId/threads/:threadRootId',
     readLimiter,
     asyncRoute(async (req, res) => {
-      const summary = await chat.getChatSummary(req.params.chatId);
+      const summary = await chat.getChatSummary(req.params.chatId!);
       if (!summary.memberIds.includes(req.user!.id)) return res.status(403).json({ error: 'Not a member of this chat' });
-      res.json(await chat.getThreadReplies(req.params.chatId, req.params.threadRootId));
+      res.json(await chat.getThreadReplies(req.params.chatId!, req.params.threadRootId!));
     }),
   );
 

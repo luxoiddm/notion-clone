@@ -33,10 +33,10 @@ export function siteRoutes(engine: FsEngine, version: string) {
     '/logo/:kind',
     readLimiter,
     asyncRoute(async (req, res) => {
-      if (req.params.kind !== 'login' && req.params.kind !== 'header') {
+      if (req.params.kind! !== 'login' && req.params.kind! !== 'header') {
         return res.status(400).json({ error: 'kind must be "login" or "header"' });
       }
-      res.sendFile(engine.getSiteLogoAbsolutePath(req.params.kind));
+      res.sendFile(engine.getSiteLogoAbsolutePath(req.params.kind!));
     }),
   );
 
