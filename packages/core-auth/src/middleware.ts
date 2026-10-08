@@ -2,22 +2,34 @@ import type { NextFunction, Request, Response } from 'express';
 import { AuthService } from './jwt.js';
 import { Role, roleAtLeast } from './types.js';
 
+/** Имя httpOnly-cookie с копией access-токена — для медиа (см. readRequestToken). */
+export const MEDIA_COOKIE = 'mediaToken';
+
 /**
- * Verifies the access token and attaches `req.user`. Accepts the token
- * either as a standard `Authorization: Bearer <token>` header (used by
- * every fetch() call in the app), or as a `?token=` query parameter.
+ * Access-токен запроса: из `Authorization: Bearer <token>` (все fetch()
+ * приложения) или — только для GET/HEAD — из httpOnly-cookie `mediaToken`.
  *
- * The query-param fallback exists solely for media URLs: an `<img src>` or
- * `<a href>` the browser fetches on its own can't carry a custom header,
- * so file-serving routes (page assets, personal file storage) need the
- * token in the URL instead. Access tokens are short-lived (15 min), which
- * bounds the exposure — see agent.md for the full tradeoff.
+ * Cookie нужна для URL, которые браузер запрашивает сам (`<img src>`,
+ * `<video src>`, `<iframe>` предпросмотра, ссылка «Скачать»): к ним нельзя
+ * добавить заголовок. Раньше токен передавался в `?token=` — и ссылка,
+ * скопированная из адресной строки, открывалась у любого (в т.ч. в
+ * инкогнито). Cookie в URL не попадает и в другой браузер не переносится.
+ * Для изменяющих запросов cookie не принимается (защита от CSRF).
  */
+export function readRequestToken(req: Request): string | undefined {
+  const header = req.headers.authorization;
+  if (header?.startsWith('Bearer ')) return header.slice('Bearer '.length);
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    const cookie = (req as Request & { cookies?: Record<string, string> }).cookies?.[MEDIA_COOKIE];
+    if (typeof cookie === 'string' && cookie) return cookie;
+  }
+  return undefined;
+}
+
+/** Verifies the access token (see readRequestToken) and attaches `req.user`. */
 export function requireAuth(auth: AuthService) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const header = req.headers.authorization;
-    const queryToken = typeof req.query.token === 'string' ? req.query.token : undefined;
-    const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : queryToken;
+    const token = readRequestToken(req);
 
     if (!token) {
       return res.status(401).json({ error: 'Missing bearer token' });

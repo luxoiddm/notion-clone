@@ -30,6 +30,201 @@ function newBlock(type: PageBlockType, content: string): PageBlock {
   return { id: randomUUID(), type, content };
 }
 
+/** Strips inline HTML markup (bold/italic/etc.) and decodes entities — used only to *detect* a `$$...$$` run and to read its raw text, never to build stored content directly (formula blocks store the merged plain text as-is). */
+function plainTextOf(html: string): string {
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  return (div.textContent ?? '').trim();
+}
+
+/**
+ * True if `text` opens a display-math run at this delimiter — `$$` takes
+ * priority over `$` (checked first) since every `$$` also technically
+ * starts with `$`. Returns the delimiter string itself (`'$$'` or
+ * `'$'`) or null if neither matches.
+ */
+function openingDelimiter(text: string): '$$' | '$' | null {
+  if (text.startsWith('$$')) return '$$';
+  if (text.startsWith('$')) return '$';
+  return null;
+}
+
+/**
+ * Detects a LaTeX display-math span — `$$...$$` or single-`$...$` — that
+ * spans a WHOLE block or run of blocks, and merges it into a single
+ * 'formula' block, instead of leaving it as inert `paragraph` blocks
+ * showing the raw delimiters unrendered. Needed because Word (and
+ * similar sources) puts each line in its own `<p>`, so a multi-line
+ * formula like `$$\n\begin{cases}...\end{cases}\n$$` arrives as several
+ * separate paragraph blocks — one line per block — with no single block
+ * containing the whole `$$...$$` span for the live-typing `$$` shortcut
+ * in Editor.tsx to ever catch (that shortcut only fires while typing
+ * into one already-empty block, not against already-pasted content
+ * spanning several).
+ *
+ * Only fires when the delimiter opens at the very start of the block's
+ * text — a paragraph that merely *contains* `$...$` somewhere inside a
+ * longer sentence (e.g. "...была $curpos=0$, то:") is deliberately left
+ * alone here and handled by `wrapInlineFormulas` instead, applied to
+ * every block this function passes through untouched. Only ever merges
+ * consecutive `paragraph` blocks — stops looking (and leaves the opening
+ * block alone) at any other block type or if no matching closing
+ * delimiter is found before the run ends, rather than guessing and
+ * potentially swallowing unrelated content into a formula.
+ */
+function mergeDollarFormulaBlocks(blocks: PageBlock[]): PageBlock[] {
+  const result: PageBlock[] = [];
+  let i = 0;
+  while (i < blocks.length) {
+    const block = blocks[i];
+    if (!block) {
+      i++;
+      continue;
+    }
+    if (block.type !== 'paragraph') {
+      result.push(block);
+      i++;
+      continue;
+    }
+
+    const text = plainTextOf(block.content);
+    const delim = openingDelimiter(text);
+    if (!delim) {
+      result.push(withInlineFormulasWrapped(block));
+      i++;
+      continue;
+    }
+    const dLen = delim.length;
+
+    // Whole formula on one line/block already — no merge needed, just
+    // strip the delimiters. Requires content between them (length >
+    // 2×dLen) so a lone "$$"/"$" pair doesn't false-positive as an
+    // empty formula.
+    if (text.length > dLen * 2 && text.endsWith(delim)) {
+      result.push(newBlock('formula', text.slice(dLen, -dLen).trim()));
+      i++;
+      continue;
+    }
+
+    const buffer = [text.slice(dLen)];
+    let j = i + 1;
+    let closedAt = -1;
+    while (j < blocks.length) {
+      const next = blocks[j];
+      if (!next || next.type !== 'paragraph') break;
+      const nextText = plainTextOf(next.content);
+      if (nextText.endsWith(delim)) {
+        buffer.push(nextText.slice(0, -dLen));
+        closedAt = j;
+        break;
+      }
+      buffer.push(nextText);
+      j++;
+    }
+
+    if (closedAt === -1) {
+      result.push(withInlineFormulasWrapped(block));
+      i++;
+      continue;
+    }
+
+    result.push(newBlock('formula', buffer.join('\n').trim()));
+    i = closedAt + 1;
+  }
+  return result;
+}
+
+/** Block types whose `content` is inline-formatted rich text (as opposed to code/divider/image/file/formula/table, which store something else) — the only ones `wrapInlineFormulas` runs on. */
+const INLINE_HTML_BLOCK_TYPES = new Set<PageBlockType>([
+  'paragraph',
+  'heading1',
+  'heading2',
+  'heading3',
+  'bulletList',
+  'numberedList',
+  'todo',
+  'callout',
+]);
+
+function withInlineFormulasWrapped(block: PageBlock): PageBlock {
+  if (!INLINE_HTML_BLOCK_TYPES.has(block.type)) return block;
+  const wrapped = wrapInlineFormulas(block.content);
+  return wrapped === block.content ? block : { ...block, content: wrapped };
+}
+
+const INLINE_MATH_PATTERN = /\$([^$\n]+)\$/g;
+
+/**
+ * Wraps single-`$`-delimited math *within* a longer run of prose — text
+ * that has other content before and/or after the `$...$` span, so it
+ * isn't a candidate for `mergeDollarFormulaBlocks`'s whole-block
+ * conversion above — as non-editable, KaTeX-hydratable `<span>`s, e.g.
+ * "была $curpos=0$, то:" → "была <span class="katex-inline"
+ * data-latex="curpos=0">$curpos=0$</span>, то:". The span keeps the
+ * literal "$...$" text as its own content — a readable fallback if
+ * hydration never runs (no JS) — plus `data-latex` holding the decoded
+ * source for `hydrateInlineFormulas()` (FormulaBlock.tsx) to render on
+ * mount, in both the editor (`EditableBlockContent` in Editor.tsx) and
+ * every read-only viewer (`BlockPreview` in PageHistoryDialog.tsx —
+ * history, moderation, and public pages all go through it).
+ *
+ * Operates via a `TreeWalker` over TEXT nodes only, never a regex over
+ * the raw HTML string — the content here may already contain tags
+ * (`<i>`, `<a href="...?x=$5">`, etc.) from earlier formatting, and a
+ * string-level regex could easily match `$` characters that fall inside
+ * an attribute value, corrupting the markup. Walking text nodes can
+ * only ever touch actual rendered text, never markup or attributes.
+ *
+ * Skips text nodes already inside an existing `.katex-inline` span —
+ * without this guard, re-parsing already-wrapped content (e.g. a
+ * re-paste, or leaving source view) would find the span's own literal
+ * "$curpos=0$" fallback text and wrap it a second time, nesting spans.
+ */
+function wrapInlineFormulas(html: string): string {
+  if (!html.includes('$')) return html;
+  const template = document.createElement('template');
+  template.innerHTML = html;
+
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  let node = walker.nextNode();
+  while (node) {
+    textNodes.push(node as Text);
+    node = walker.nextNode();
+  }
+
+  let changed = false;
+  for (const textNode of textNodes) {
+    if ((textNode.parentElement as HTMLElement | null)?.closest('.katex-inline')) continue;
+    const text = textNode.textContent ?? '';
+    if (!text.includes('$')) continue;
+
+    INLINE_MATH_PATTERN.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let matchedAny = false;
+    while ((match = INLINE_MATH_PATTERN.exec(text))) {
+      const whole = match[0];
+      const latex = match[1] ?? '';
+      matchedAny = true;
+      if (match.index > lastIndex) frag.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      const span = document.createElement('span');
+      span.className = 'katex-inline';
+      span.setAttribute('data-latex', latex);
+      span.textContent = whole;
+      frag.appendChild(span);
+      lastIndex = match.index + whole.length;
+    }
+    if (!matchedAny) continue;
+    if (lastIndex < text.length) frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+    textNode.replaceWith(frag);
+    changed = true;
+  }
+
+  return changed ? template.innerHTML : html;
+}
+
 /** True if `html` has no real block-level structure — just inline text/formatting. */
 function isPurelyInline(root: HTMLElement): boolean {
   return !Array.from(root.children).some((el) => BLOCK_LEVEL_TAGS.has(el.tagName));
@@ -56,7 +251,7 @@ export function htmlToBlocks(html: string): PageBlock[] {
 
   if (isPurelyInline(root)) {
     const inline = sanitizeInlineHtml(root.innerHTML).trim();
-    return inline ? [newBlock('paragraph', inline)] : [];
+    return inline ? mergeDollarFormulaBlocks([newBlock('paragraph', inline)]) : [];
   }
 
   const blocks: PageBlock[] = [];
@@ -137,7 +332,7 @@ export function htmlToBlocks(html: string): PageBlock[] {
   };
 
   walk(root);
-  return blocks;
+  return mergeDollarFormulaBlocks(blocks);
 }
 
 /**
@@ -156,10 +351,37 @@ export function htmlToBlocks(html: string): PageBlock[] {
  * span's content. A single pass can't do that, because `String.replace`
  * with a global regex scans the original input's positions once — it
  * never re-scans text a prior match in the same call already produced.
+ *
+ * Every delimiter's *opening* character is guarded with a negative
+ * lookbehind for a preceding backslash — `\_`, `` \` ``, `\*`, `\[`, `\~`
+ * are left completely untouched (backslash and the character both kept,
+ * no formatting applied) rather than treated as markdown syntax. This
+ * matters most for `_`: pasted LaTeX legitimately uses `\_` to mean "a
+ * literal underscore character" (as opposed to a bare `_`, which starts
+ * a subscript) — e.g. a variable name like `Ratio_sign_1` written as
+ * `Ratio\_sign\_1`. Before this guard, the italic alternative had no
+ * concept of escaping: it would grab the first `_` it saw (regardless of
+ * a preceding `\`) as an opening delimiter and consume everything up to
+ * the next one as the closing delimiter — dropping both underscore
+ * characters and leaving a bare stray `\` glued to adjacent text
+ * (`Ratio\sign1`), which KaTeX then renders as the undefined control
+ * sequence `\sign` instead of the intended literal-underscore variable
+ * name.
+ *
+ * The underscore alternative additionally requires a non-word character
+ * (or string start/end) on both sides of the delimiter pair — matching
+ * CommonMark's own rule that `_..._` emphasis, unlike `*...*`, doesn't
+ * work *inside* a word. Without this, a variable name that's plain prose
+ * text rather than LaTeX at all — e.g. `v_in_left` typed directly, no
+ * `\` anywhere — would still misread as italic (`v` + `<i>in</i>` +
+ * `left`), since nothing about that string looks escaped. `*` keeps
+ * working intraword (`sn*it*ch`) since that's standard Markdown
+ * behavior and not the pattern actually causing trouble here.
  */
 export function inlineMarkdownToHtml(rawText: string): string {
   const escaped = escapeToHtml(rawText);
-  const pattern = /`([^`\n]+)`|\[([^\]\n]+)\]\(([^)\n]+)\)|\*\*([^*\n]+)\*\*|~~([^~\n]+)~~|\*([^*\n]+)\*|_([^_\n]+)_/g;
+  const pattern =
+    /(?<!\\)`([^`\n]+)`|(?<!\\)\[([^\]\n]+)\]\(([^)\n]+)\)|(?<!\\)\*\*([^*\n]+)\*\*|(?<!\\)~~([^~\n]+)~~|(?<!\\)\*([^*\n]+)\*|(?<!\\)(?<!\w)_([^_\n]+)_(?!\w)/g;
 
   return escaped.replace(pattern, (match, code, linkText, linkHref, bold, strike, italicStar, italicUnderscore) => {
     if (code !== undefined) return `<code>${code}</code>`;
@@ -282,7 +504,7 @@ export function plainTextToBlocks(text: string): PageBlock[] {
     i++;
   }
 
-  return blocks;
+  return mergeDollarFormulaBlocks(blocks);
 }
 
 /**
@@ -302,13 +524,19 @@ export function plainTextToBlocks(text: string): PageBlock[] {
  */
 export function chatMarkdownToHtml(text: string): string {
   const segments = text.split(/(```[\s\S]*?```)/g);
+  const isCode = (seg: string | undefined) => !!seg && seg.startsWith('```') && seg.endsWith('```') && seg.length >= 6;
   return segments
-    .map((segment) => {
-      if (segment.startsWith('```') && segment.endsWith('```')) {
+    .map((segment, i) => {
+      if (isCode(segment)) {
         const code = segment.slice(3, -3).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
         return `<pre><code>${escapeToHtml(code)}</code></pre>`;
       }
-      return inlineMarkdownToHtml(segment);
+      // <pre> — блочный элемент со своими отступами: переносы строк вокруг
+      // него (в whitespace-pre-wrap) давали большие пустые промежутки.
+      let text = segment;
+      if (isCode(segments[i - 1])) text = text.replace(/^[ \t]*\r?\n/, '');
+      if (isCode(segments[i + 1])) text = text.replace(/(\r?\n[ \t]*)+$/, '');
+      return inlineMarkdownToHtml(text);
     })
     .join('');
 }

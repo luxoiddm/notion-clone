@@ -10,7 +10,7 @@ export function PresenceAvatars({ users, currentUserId }: { users: PresenceUser[
       {others.slice(0, 5).map((u) => (
         <div key={u.id} title={u.displayName} className="relative rounded-full ring-2 ring-surface">
           <Avatar avatarUrl={u.avatarUrl} displayName={u.displayName} size="xs" />
-          <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-surface bg-emerald-500" />
+          <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-surface bg-success" />
         </div>
       ))}
       {others.length > 5 && (

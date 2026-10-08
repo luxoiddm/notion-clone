@@ -1,14 +1,21 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Send, Loader2, MessageCircle, ChevronDown, ChevronUp, Paperclip, Upload, X, Pencil, Trash2, SmilePlus, FileSymlink } from 'lucide-react';
-import { chatApi, type ChatMessage, type ChatSummary, type ChatAttachment, type UserFileInfo } from '../lib/api';
+import { Send, Loader2, MessageCircle, ChevronDown, ChevronUp, Paperclip, Upload, X, Pencil, Trash2, SmilePlus, FileSymlink, Smile } from 'lucide-react';
+import { EmojiPicker } from './EmojiPicker';
+import { GifPicker, useGifStatus } from './GifPicker';
+import { chatApi, filesApi, type ChatMessage, type ChatSummary, type ChatAttachment, type UserFileInfo, type GifItem } from '../lib/api';
 import { chatMarkdownToHtml, htmlToMarkdown } from '../lib/pasteToBlocks';
 import { getSocket } from '../lib/socket';
+import { playSound, setOpenChat } from '../lib/sounds';
+import { clearUnread } from '../lib/unread';
 import { PagePickerDialog, type AttachedPageRef } from './PagePickerDialog';
 import { PageRefCard } from './PageRefCard';
 import { FilePickerDialog } from './FilePickerDialog';
 import { ChatAttachmentView } from './ChatAttachmentView';
+import { MediaRecordButton } from './MediaRecordButton';
+import { MessageActionSheet } from './MessageActionSheet';
+import { canRecord, type RecordingResult } from '../lib/mediaRecorder';
 import { Avatar } from './Avatar';
 import { useToast } from './Toast';
 
@@ -53,20 +60,20 @@ function AttachMenu({ onAttachPage, onAttachFile }: { onAttachPage: () => void; 
         type="button"
         onClick={() => setOpen((v) => !v)}
         title="Прикрепить"
-        className="rounded-md border border-line/10 px-2.5 py-2 text-ink-muted hover:bg-surface-hover hover:text-ink"
+        className="btn-icon"
       >
-        <Paperclip size={14} />
+        <Paperclip size={17} />
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 z-20 mb-1 w-44 rounded-lg border border-line/10 bg-surface-panel p-1 shadow-panel">
+        <div className="popover absolute bottom-full left-0 z-20 mb-2 w-52">
           <button
             type="button"
             onClick={() => {
               onAttachPage();
               setOpen(false);
             }}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink-muted hover:bg-surface-hover hover:text-ink"
+            className="menu-item"
           >
             <FileSymlink size={13} />
             Страницу
@@ -77,7 +84,7 @@ function AttachMenu({ onAttachPage, onAttachFile }: { onAttachPage: () => void; 
               onAttachFile();
               setOpen(false);
             }}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink-muted hover:bg-surface-hover hover:text-ink"
+            className="menu-item"
           >
             <Upload size={13} />
             Файл
@@ -156,6 +163,27 @@ export function ChatWindow({
 
   const listRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const composerRowRef = useRef<HTMLDivElement>(null);
+  // MediaRecorder есть не везде (и только по HTTPS) — проверяем после монтирования, чтобы не разойтись с SSR.
+  const [recordSupported, setRecordSupported] = useState(false);
+  useEffect(() => setRecordSupported(canRecord()), []);
+  // Панели над полем ввода: эмодзи или поиск GIF.
+  const [panel, setPanel] = useState<'emoji' | 'gif' | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const gifStatus = useGifStatus();
+  useEffect(() => {
+    if (!panel) return;
+    const onDown = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setPanel(null);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setPanel(null);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [panel]);
   const threadComposerRef = useRef<HTMLTextAreaElement>(null);
   const typingSendTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingReceiveTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -226,7 +254,20 @@ export function ChatWindow({
       })
       .finally(() => setIsLoading(false));
 
-    if (!accessToken) return;
+    setOpenChat(chat.id);
+    clearUnread(chat.id);
+    // Вернулись во вкладку с открытым чатом — всё в нём уже прочитано.
+    const onSeen = () => document.visibilityState === 'visible' && clearUnread(chat.id);
+    window.addEventListener('focus', onSeen);
+    document.addEventListener('visibilitychange', onSeen);
+    const stopSeen = () => {
+      window.removeEventListener('focus', onSeen);
+      document.removeEventListener('visibilitychange', onSeen);
+    };
+    if (!accessToken) return () => {
+      stopSeen();
+      setOpenChat(null);
+    };
     const socket = getSocket(accessToken);
     socket.emit('chat:join', { chatId: chat.id });
 
@@ -294,6 +335,8 @@ export function ChatWindow({
     socket.on('chat:typing', onTyping);
 
     return () => {
+      stopSeen();
+      setOpenChat(null);
       socket.emit('chat:leave', { chatId: chat.id });
       socket.off('chat:message', onMessage);
       socket.off('chat:message-updated', onMessageUpdated);
@@ -338,6 +381,53 @@ export function ChatWindow({
     getSocket(accessToken).emit('chat:typing', { chatId: chat.id, isTyping });
   };
 
+  /** Вставляет эмодзи в позицию курсора (панель остаётся открытой — можно выбрать несколько подряд). */
+  const insertEmoji = (emoji: string) => {
+    const el = composerRef.current;
+    const start = el?.selectionStart ?? composerText.length;
+    const end = el?.selectionEnd ?? composerText.length;
+    const next = composerText.slice(0, start) + emoji + composerText.slice(end);
+    handleComposerChange(next);
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      const pos = start + emoji.length;
+      el.setSelectionRange(pos, pos);
+    });
+  };
+
+  /** GIF отправляется сразу отдельным сообщением — как в Telegram. */
+  const sendGif = async (g: GifItem) => {
+    setPanel(null);
+    try {
+      const { id: _id, ...gif } = g;
+      const message = await chatApi.sendMessage(chat.id, { text: '', gif });
+      playSound('sent');
+      appendMessage(message);
+    } catch (err) {
+      push(err instanceof Error ? err.message : 'Не удалось отправить GIF', 'error');
+    }
+  };
+
+  /** Голосовое или кружок: загрузить файл в своё хранилище и отправить сообщением. */
+  const sendRecording = async (r: RecordingResult) => {
+    let uploaded: string | null = null;
+    try {
+      const file = await filesApi.upload(r.file);
+      uploaded = file.fileName;
+      const message = await chatApi.sendMessage(chat.id, {
+        text: '',
+        attachment: { url: file.url, fileName: file.originalName, mimeType: file.mimeType, size: file.size, kind: r.kind, duration: r.duration, waveform: r.waveform },
+      });
+      playSound('sent');
+      appendMessage(message);
+    } catch (err) {
+      // Файл загрузился, а сообщение не ушло — не оставляем «сироту» в хранилище.
+      if (uploaded) void filesApi.remove(uploaded).catch(() => undefined);
+      push(err instanceof Error && err.message !== 'Upload failed' ? err.message : r.kind === 'voice' ? 'Не удалось отправить голосовое' : 'Не удалось отправить кружок', 'error');
+    }
+  };
+
   const handleComposerChange = (text: string) => {
     setComposerText(text);
     emitTyping(true);
@@ -360,6 +450,7 @@ export function ChatWindow({
 
     try {
       const message = await chatApi.sendMessage(chat.id, { text, pageRef, attachment });
+      playSound('sent');
       appendMessage(message);
     } catch (err) {
       // Restore what the person was trying to send — e.g. an attachment
@@ -390,6 +481,7 @@ export function ChatWindow({
     setThreadComposerText('');
     try {
       const message = await chatApi.sendMessage(chat.id, { text, threadRootId: openThreadId });
+      playSound('sent');
       appendThreadReply(message);
     } catch (err) {
       setThreadComposerText(text);
@@ -431,13 +523,17 @@ export function ChatWindow({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto px-3 py-5 sm:px-6">
         {isLoading ? (
           <div className="flex h-full items-center justify-center text-ink-muted">
             <Loader2 size={18} className="animate-spin" />
           </div>
         ) : messages.length === 0 ? (
-          <p className="py-10 text-center text-sm text-ink-faint">Сообщений пока нет — напишите первое.</p>
+          <div className="flex h-full flex-col items-center justify-center py-10 text-center">
+            <span className="mb-3 text-3xl">👋</span>
+            <p className="text-sm font-medium text-ink">Начните разговор</p>
+            <p className="mt-1 text-sm text-ink-muted">Сообщений пока нет — напишите первое.</p>
+          </div>
         ) : (
           messages.map((msg) => (
             <MessageRow
@@ -462,8 +558,8 @@ export function ChatWindow({
       </div>
 
       {openThreadId && (
-        <div className="max-h-64 shrink-0 overflow-y-auto border-t border-line/10 bg-surface-panel px-4 py-3">
-          <div className="mb-2 flex items-center justify-between text-xs font-medium uppercase text-ink-faint">
+        <div className="max-h-72 shrink-0 overflow-y-auto border-t border-line/[0.07] bg-surface-panel px-4 py-3 sm:px-6">
+          <div className="section-label mb-2 flex items-center justify-between px-0">
             <span>Тред</span>
             <button type="button" onClick={closeThread} className="text-ink-muted hover:text-ink">
               Закрыть
@@ -509,12 +605,12 @@ export function ChatWindow({
               }}
               placeholder="Ответить в теме... (Ctrl+Enter — отправить)"
               rows={1}
-              className="max-h-32 flex-1 resize-none overflow-y-auto rounded-md border border-line/10 bg-surface px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
+              className="input max-h-32 flex-1 resize-none overflow-y-auto"
             />
             <button
               type="button"
               onClick={() => void handleSendThreadReply()}
-              className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-white hover:opacity-90"
+              className="btn-primary h-9 w-9 shrink-0 px-0"
             >
               <Send size={14} />
             </button>
@@ -522,7 +618,7 @@ export function ChatWindow({
         </div>
       )}
 
-      <div className="shrink-0 border-t border-line/10 px-4 py-3">
+      <div className="shrink-0 px-2 pb-[max(var(--safe-bottom),12px)] pt-1 sm:px-6 sm:pb-4">
         {typingNames.length > 0 && (
           <p className="mb-1.5 flex items-center gap-1.5 text-xs text-ink-muted">
             <MessageCircle size={12} className="animate-pulse" />
@@ -530,7 +626,7 @@ export function ChatWindow({
           </p>
         )}
         {attachedPage && (
-          <div className="mb-2 flex w-fit items-center gap-2 rounded-md border border-line/10 bg-surface-panel px-2.5 py-1.5 text-xs">
+          <div className="mb-2 flex w-fit items-center gap-2 rounded-lg border border-line/[0.08] bg-surface-raised px-2.5 py-1.5 text-xs shadow-xs">
             <span className="text-ink">{attachedPage.title}</span>
             <button type="button" onClick={() => setAttachedPage(null)} className="text-ink-faint hover:text-ink">
               <X size={12} />
@@ -538,14 +634,14 @@ export function ChatWindow({
           </div>
         )}
         {attachedFile && (
-          <div className="mb-2 flex w-fit items-center gap-2 rounded-md border border-line/10 bg-surface-panel px-2.5 py-1.5 text-xs">
+          <div className="mb-2 flex w-fit items-center gap-2 rounded-lg border border-line/[0.08] bg-surface-raised px-2.5 py-1.5 text-xs shadow-xs">
             <span className="text-ink">{attachedFile.fileName}</span>
             <button type="button" onClick={() => setAttachedFile(null)} className="text-ink-faint hover:text-ink">
               <X size={12} />
             </button>
           </div>
         )}
-        <div className="flex items-end gap-2">
+        <div ref={composerRowRef} className="relative flex items-end gap-1 rounded-xl border border-line/[0.1] bg-surface-raised p-1.5 shadow-xs transition-[border-color,box-shadow] focus-within:border-accent/50 focus-within:shadow-ring">
           <AttachMenu onAttachPage={() => setPickerOpen(true)} onAttachFile={() => setFilePickerOpen(true)} />
           <textarea
             ref={composerRef}
@@ -558,19 +654,58 @@ export function ChatWindow({
                 void handleSend();
               }
             }}
-            placeholder="Написать сообщение... (Ctrl+Enter — отправить, поддерживается Markdown)"
+            placeholder="Напишите сообщение…"
             rows={1}
-            className="max-h-40 flex-1 resize-none overflow-y-auto rounded-md border border-line/10 bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+            className="max-h-40 min-h-[32px] flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-1.5 text-sm text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none"
           />
-          <button
-            type="button"
-            onClick={() => void handleSend()}
-            disabled={!composerText.trim() && !attachedPage && !attachedFile}
-            className="shrink-0 rounded-md bg-accent px-3 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
-          >
-            <Send size={14} />
-          </button>
+          <div ref={panelRef} className="flex shrink-0 items-center md:relative">
+            {panel && (
+              // Телефон: панель привязана ко всему полю ввода и стоит по центру
+              // экрана (от кнопок справа она уезжала за левый край).
+              <div className="popover absolute bottom-full z-30 mb-3 p-0 max-md:inset-x-0 max-md:mx-auto max-md:w-fit md:right-0">
+                {panel === 'emoji' ? (
+                  <EmojiPicker onPick={insertEmoji} />
+                ) : (
+                  <GifPicker providers={gifStatus.providers} onPick={(g) => void sendGif(g)} />
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setPanel((p) => (p === 'emoji' ? null : 'emoji'))}
+              title="Эмодзи"
+              className={`btn-icon ${panel === 'emoji' ? 'bg-surface-hover text-ink' : ''}`}
+            >
+              <Smile size={18} />
+            </button>
+            {gifStatus.enabled && (
+              <button
+                type="button"
+                onClick={() => setPanel((p) => (p === 'gif' ? null : 'gif'))}
+                title="GIF"
+                className={`btn-icon w-auto px-1.5 text-[11px] font-bold tracking-wide ${panel === 'gif' ? 'bg-surface-hover text-ink' : ''}`}
+              >
+                <span className="rounded border-[1.5px] border-current px-1 leading-[14px]">GIF</span>
+              </button>
+            )}
+          </div>
+          {!composerText.trim() && !attachedPage && !attachedFile && recordSupported ? (
+            <MediaRecordButton anchorRef={composerRowRef} onRecorded={sendRecording} />
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleSend()}
+              disabled={!composerText.trim() && !attachedPage && !attachedFile}
+              className="btn-primary h-11 w-11 shrink-0 rounded-full px-0 md:h-8 md:w-8 md:rounded-lg"
+              title="Отправить (Ctrl+Enter)"
+            >
+              <Send size={15} />
+            </button>
+          )}
         </div>
+        <p className="mt-1.5 hidden px-1 text-2xs text-ink-faint sm:block">
+          <span className="kbd">Ctrl</span> + <span className="kbd">Enter</span> — отправить · поддерживается Markdown
+        </p>
       </div>
 
       {pickerOpen && (
@@ -651,9 +786,70 @@ function MessageRow({
   }, [isEditing, draft]);
 
   const isDeleted = !!message.deletedAt;
+  // Сообщение только из GIF — показываем без «пузыря», как в Telegram.
+  // GIF и кружок показываются без пузыря.
+  const gifOnly = (!!message.gif || message.attachment?.kind === 'round') && !message.text && !isDeleted && !isEditing;
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const { push: pushToast } = useToast();
+
+  // Долгое нажатие (телефон) или правая кнопка — меню действий. Обычное
+  // нажатие по кружку/голосовому/картинке занято просмотром, а панель при
+  // наведении на телефоне не появляется — без этого кружок не удалить.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
+  const suppressClick = useRef(false);
+  const canMenu = !isDeleted && !isEditing;
+  const clearPress = () => {
+    if (pressTimer.current) clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+    pressStart.current = null;
+  };
+  const openMenu = () => {
+    setPickerOpen(false);
+    setMenuOpen(true);
+    navigator.vibrate?.(10);
+  };
+  const pressHandlers = canMenu
+    ? {
+        onTouchStart: (e: React.TouchEvent) => {
+          if (e.touches.length !== 1) return;
+          const t = e.touches[0]!;
+          pressStart.current = { x: t.clientX, y: t.clientY };
+          suppressClick.current = false;
+          pressTimer.current = setTimeout(() => {
+            pressTimer.current = null;
+            suppressClick.current = true;
+            openMenu();
+          }, 450);
+        },
+        onTouchMove: (e: React.TouchEvent) => {
+          const s0 = pressStart.current;
+          const t = e.touches[0];
+          if (s0 && t && Math.hypot(t.clientX - s0.x, t.clientY - s0.y) > 10) clearPress();
+        },
+        onTouchEnd: (e: React.TouchEvent) => {
+          clearPress();
+          if (suppressClick.current) e.preventDefault();
+        },
+        onTouchCancel: clearPress,
+        onClickCapture: (e: React.MouseEvent) => {
+          if (suppressClick.current) {
+            suppressClick.current = false;
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        },
+        onContextMenu: (e: React.MouseEvent) => {
+          if ((e.target as HTMLElement).closest('textarea, input')) return;
+          e.preventDefault();
+          clearPress();
+          openMenu();
+        },
+      }
+    : {};
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -666,10 +862,37 @@ function MessageRow({
 
   return (
     <div className={`flex items-start gap-2 ${isMine ? 'justify-end' : 'justify-start'}`}>
+      {menuOpen && (
+        <MessageActionSheet
+          message={message}
+          isMine={isMine}
+          reactions={QUICK_REACTIONS}
+          myReactions={Object.entries(message.reactions ?? {})
+            .filter(([, ids]) => ids.includes(currentUserId))
+            .map(([e]) => e)}
+          onReact={onToggleReaction}
+          onThread={compact ? undefined : onToggleThread}
+          onEdit={onStartEdit}
+          onDelete={onDelete}
+          onCopied={() => pushToast('Текст скопирован', 'success')}
+          onClose={() => setMenuOpen(false)}
+        />
+      )}
       {!isMine && !compact && <Avatar avatarUrl={authorAvatarUrl} displayName={authorName} size="sm" />}
-      <div className={`group flex flex-col ${isMine ? 'items-end' : 'items-start'}`}>
-        <div className={`relative max-w-[75%] rounded-lg px-3 py-2 text-sm ${isMine ? 'bg-accent text-white' : 'bg-surface-panel text-ink'}`}>
-          {!isMine && !compact && <div className="mb-0.5 text-xs font-medium opacity-70">{authorName}</div>}
+      <div
+        {...pressHandlers}
+        className={`group flex min-w-0 max-w-[88%] flex-col sm:max-w-[70%] max-md:select-none ${isMine ? 'items-end' : 'items-start'}`}
+        style={{ WebkitTouchCallout: 'none' }}
+      >
+        <div
+          className={
+            gifOnly
+              ? 'relative max-w-[min(75vw,320px)] text-sm'
+              : // До 70% ширины чата; свои — мягкая подложка акцента, а не насыщенный акцент с белым текстом.
+                `relative max-w-full rounded-2xl px-4 py-2.5 text-[14px] leading-[1.6] text-ink ${isMine ? 'rounded-br-md bg-accent-soft' : 'rounded-bl-md bg-surface-hover'}`
+          }
+        >
+          {!isMine && !compact && <div className={`mb-0.5 text-xs font-medium opacity-70 ${gifOnly ? 'px-1 text-ink-muted' : ''}`}>{authorName}</div>}
 
           {isDeleted ? (
             <div className="italic opacity-60">Сообщение удалено</div>
@@ -691,7 +914,7 @@ function MessageRow({
                 }}
                 rows={1}
                 className={`max-h-64 resize-none overflow-y-auto rounded border px-2 py-1 text-sm focus:outline-none ${
-                  isMine ? 'border-white/30 bg-white/10 text-white' : 'border-line/10 bg-surface text-ink'
+                  'border-line/10 bg-surface text-ink'
                 }`}
               />
             <div className="flex items-center gap-2 text-xs">
@@ -713,12 +936,24 @@ function MessageRow({
               />
             )}
             {message.pageRef && <PageRefCard ownerId={message.pageRef.ownerId} projectId={message.pageRef.projectId} pageId={message.pageRef.pageId} />}
-            {message.attachment && <ChatAttachmentView attachment={message.attachment} />}
+            {message.attachment && <ChatAttachmentView attachment={message.attachment} isMine={isMine} />}
+            {message.gif && (
+              <a href={message.gif.url} target="_blank" rel="noreferrer" className={`block overflow-hidden rounded-xl ${message.text ? 'mt-1.5' : ''}`}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={message.gif.url}
+                  alt={message.gif.title || 'GIF'}
+                  loading="lazy"
+                  className="block h-auto w-full max-w-[320px] bg-surface-sunken"
+                  style={{ aspectRatio: `${message.gif.width} / ${message.gif.height}`, width: Math.min(320, message.gif.width) }}
+                />
+              </a>
+            )}
           </>
         )}
 
         {!isDeleted && !isEditing && (
-          <div className="absolute -top-2.5 right-1 hidden items-center gap-0.5 rounded-md border border-line/10 bg-surface-panel p-0.5 text-ink-muted shadow-panel group-hover:flex">
+          <div className="absolute -top-3.5 right-1 hidden items-center gap-0.5 rounded-lg bg-surface-raised p-0.5 text-ink-muted shadow-pop group-hover:flex">
             <div ref={pickerRef} className="relative">
               <button
                 type="button"
@@ -730,7 +965,7 @@ function MessageRow({
               </button>
               {pickerOpen && (
                 <div
-                  className={`absolute bottom-full z-20 mb-1 flex gap-0.5 rounded-lg border border-line/10 bg-surface-panel p-1 shadow-panel ${
+                  className={`popover absolute bottom-full z-20 mb-1 flex gap-0.5 ${
                     isMine ? 'right-0' : 'left-0'
                   }`}
                 >
@@ -752,10 +987,12 @@ function MessageRow({
             </div>
             {isMine && (
               <>
-                <button type="button" onClick={onStartEdit} title="Редактировать" className="rounded p-1 hover:bg-surface-hover hover:text-ink">
-                  <Pencil size={11} />
-                </button>
-                <button type="button" onClick={onDelete} title="Удалить" className="rounded p-1 hover:bg-surface-hover hover:text-red-500">
+                {message.text && (
+                  <button type="button" onClick={onStartEdit} title="Редактировать" className="rounded p-1 hover:bg-surface-hover hover:text-ink">
+                    <Pencil size={11} />
+                  </button>
+                )}
+                <button type="button" onClick={onDelete} title="Удалить" className="rounded p-1 hover:bg-surface-hover hover:text-danger">
                   <Trash2 size={11} />
                 </button>
               </>
@@ -773,8 +1010,8 @@ function MessageRow({
               onClick={() => onToggleReaction(emoji)}
               className={`flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs ${
                 userIds.includes(currentUserId)
-                  ? 'border-accent/40 bg-accent-soft text-ink'
-                  : 'border-line/10 bg-surface text-ink-muted hover:bg-surface-hover'
+                  ? 'border-accent/40 bg-accent-soft text-accent-ink'
+                  : 'border-line/10 bg-surface-raised text-ink-muted hover:bg-surface-hover'
               }`}
             >
               <span>{emoji}</span>
@@ -784,13 +1021,13 @@ function MessageRow({
         </div>
       )}
 
-      <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-faint">
-        <span>{formatTime(message.createdAt)}</span>
+      <div className="mt-1 flex items-center gap-2 px-1 text-2xs text-ink-faint">
+        <span className="tabular-nums">{formatTime(message.createdAt)}</span>
         {message.editedAt && !isDeleted && (
           <span title={`Изменено ${formatTime(message.editedAt)}`}>(изменено)</span>
         )}
         {!compact && replyCount === 0 && !isDeleted && (
-          <button type="button" onClick={onToggleThread} className="flex items-center gap-0.5 hover:text-ink-muted">
+          <button type="button" onClick={onToggleThread} className="hidden items-center gap-0.5 hover:text-accent group-hover:flex">
             Ответить в теме
             {isThreadOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
           </button>

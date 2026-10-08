@@ -34,7 +34,7 @@ export function CallControls({
         type="button"
         onClick={onToggleMic}
         title={micEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
-        className={`rounded-full p-2 ${micEnabled ? 'bg-surface text-ink-muted hover:bg-surface-hover' : 'bg-red-500/15 text-red-500 hover:bg-red-500/25'}`}
+        className={`flex h-10 w-10 items-center justify-center rounded-full shadow-xs transition-colors ${micEnabled ? 'bg-surface-raised text-ink-muted hover:bg-surface-hover hover:text-ink' : 'bg-danger/15 text-danger hover:bg-danger/25'}`}
       >
         {micEnabled ? <Mic size={16} /> : <MicOff size={16} />}
       </button>
@@ -43,7 +43,7 @@ export function CallControls({
         type="button"
         onClick={onToggleCamera}
         title={cameraEnabled ? 'Выключить камеру' : 'Включить камеру'}
-        className={`rounded-full p-2 ${cameraEnabled ? 'bg-surface text-ink-muted hover:bg-surface-hover' : 'bg-red-500/15 text-red-500 hover:bg-red-500/25'}`}
+        className={`flex h-10 w-10 items-center justify-center rounded-full shadow-xs transition-colors ${cameraEnabled ? 'bg-surface-raised text-ink-muted hover:bg-surface-hover hover:text-ink' : 'bg-danger/15 text-danger hover:bg-danger/25'}`}
       >
         {cameraEnabled ? <Video size={16} /> : <VideoOff size={16} />}
       </button>
@@ -52,7 +52,7 @@ export function CallControls({
         type="button"
         onClick={onToggleScreenShare}
         title={isScreenSharing ? 'Остановить демонстрацию экрана' : 'Демонстрация экрана'}
-        className={`rounded-full p-2 ${isScreenSharing ? 'bg-accent-soft text-accent hover:opacity-90' : 'bg-surface text-ink-muted hover:bg-surface-hover'}`}
+        className={`flex h-10 w-10 items-center justify-center rounded-full shadow-xs transition-colors ${isScreenSharing ? 'bg-accent text-white' : 'bg-surface-raised text-ink-muted hover:bg-surface-hover hover:text-ink'}`}
       >
         {isScreenSharing ? <MonitorX size={16} /> : <MonitorUp size={16} />}
       </button>
@@ -61,7 +61,7 @@ export function CallControls({
         type="button"
         onClick={onLeave}
         title="Завершить звонок"
-        className="rounded-full bg-red-500 p-2 text-white hover:opacity-90"
+        className="flex h-10 w-14 items-center justify-center rounded-full bg-danger text-white shadow-xs transition-opacity hover:opacity-90"
       >
         <PhoneOff size={16} />
       </button>

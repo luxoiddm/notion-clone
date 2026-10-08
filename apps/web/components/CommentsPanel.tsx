@@ -6,6 +6,7 @@ import { commentsApi, type Comment } from '../lib/api';
 import { chatMarkdownToHtml, htmlToMarkdown } from '../lib/pasteToBlocks';
 import { Avatar } from './Avatar';
 import { useToast } from './Toast';
+import { editorWidthStyle } from '../lib/editorWidth';
 
 // Same fixed set as chat's reaction picker — one visual language for
 // "react to a message" across the whole app, not two different pickers.
@@ -123,10 +124,11 @@ export function CommentsPanel({
   };
 
   return (
-    <div className="mx-auto max-w-3xl border-t border-line/10 px-8 py-8">
-      <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-ink">
-        <MessageCircle size={15} />
-        Комментарии{comments.length > 0 ? ` (${comments.length})` : ''}
+    <div className="no-print mx-auto w-full px-6 pb-16 sm:px-16" style={editorWidthStyle}><div className="border-t border-line/[0.08] pt-8">
+      <h2 className="mb-5 flex items-center gap-2 text-sm font-semibold text-ink">
+        <MessageCircle size={15} className="text-ink-faint" />
+        Комментарии
+        {comments.length > 0 && <span className="badge">{comments.length}</span>}
       </h2>
 
       {isLoading ? (
@@ -149,13 +151,13 @@ export function CommentsPanel({
               onToggleReaction={(emoji) => void handleToggleReaction(comment.id, emoji)}
             />
           ))}
-          {comments.length === 0 && <p className="text-sm text-ink-faint">Пока нет комментариев — будьте первым.</p>}
+          {comments.length === 0 && <p className="text-sm text-ink-faint">Пока нет комментариев — начните обсуждение.</p>}
         </div>
       )}
 
-      <div className="mt-5 flex items-start gap-2">
+      <div className="mt-6 flex items-start gap-3">
         <Avatar avatarUrl={usersById.get(currentUserId)?.avatarUrl ?? null} displayName={usersById.get(currentUserId)?.displayName ?? '?'} size="sm" />
-        <div className="flex-1">
+        <div className="flex-1 rounded-xl border border-line/[0.1] bg-surface-raised p-1.5 shadow-xs transition-[border-color,box-shadow] focus-within:border-accent/50 focus-within:shadow-ring">
           <textarea
             ref={composerRef}
             value={text}
@@ -167,20 +169,19 @@ export function CommentsPanel({
                 void handleSend();
               }
             }}
-            placeholder="Написать комментарий... (Ctrl+Enter — отправить, поддерживается Markdown)"
-            rows={1}
-            className="max-h-40 w-full resize-none overflow-y-auto rounded-md border border-line/10 bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+            placeholder="Добавьте комментарий…"
+            rows={2}
+            className="block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none"
           />
-          <button
-            type="button"
-            onClick={() => void handleSend()}
-            disabled={!text.trim()}
-            className="mt-2 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-          >
-            Комментировать
-          </button>
+          <div className="flex items-center justify-between gap-2 pl-2">
+            <span className="hidden text-2xs text-ink-faint sm:inline">Ctrl+Enter — отправить · Markdown</span>
+            <button type="button" onClick={() => void handleSend()} disabled={!text.trim()} className="btn-primary btn-sm ml-auto">
+              Отправить
+            </button>
+          </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }
@@ -251,7 +252,7 @@ function CommentRow({
                 }
               }}
               rows={1}
-              className="max-h-64 w-full resize-none overflow-y-auto rounded border border-line/10 bg-surface px-2 py-1 text-sm focus:outline-none"
+              className="input max-h-64 resize-none overflow-y-auto"
             />
             <div className="flex items-center gap-2 text-xs">
               <button
@@ -283,10 +284,10 @@ function CommentRow({
               key={emoji}
               type="button"
               onClick={() => onToggleReaction(emoji)}
-              className={`flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs ${
+              className={`flex h-6 items-center gap-1 rounded-full border px-2 text-xs ${
                 userIds.includes(currentUserId)
-                  ? 'border-accent/40 bg-accent-soft text-ink'
-                  : 'border-line/10 bg-surface text-ink-muted hover:bg-surface-hover'
+                  ? 'border-accent/40 bg-accent-soft text-accent-ink'
+                  : 'border-line/10 bg-surface-raised text-ink-muted hover:bg-surface-hover'
               }`}
             >
               <span>{emoji}</span>
@@ -304,7 +305,7 @@ function CommentRow({
               <SmilePlus size={13} />
             </button>
             {pickerOpen && (
-              <div className="absolute bottom-full left-0 z-20 mb-1 flex gap-0.5 rounded-lg border border-line/10 bg-surface-panel p-1 shadow-panel">
+              <div className="popover absolute bottom-full left-0 z-20 mb-1 flex gap-0.5">
                 {QUICK_REACTIONS.map((emoji) => (
                   <button
                     key={emoji}
@@ -323,11 +324,11 @@ function CommentRow({
           </div>
 
           {isMine && !isEditing && (
-            <div className="hidden items-center gap-1 opacity-0 group-hover:flex group-hover:opacity-100">
+            <div className="hidden items-center gap-2 opacity-0 group-hover:flex group-hover:opacity-100">
               <button type="button" onClick={() => setIsEditing(true)} title="Редактировать" className="text-ink-faint hover:text-ink">
                 <Pencil size={12} />
               </button>
-              <button type="button" onClick={onDelete} title="Удалить" className="text-ink-faint hover:text-red-500">
+              <button type="button" onClick={onDelete} title="Удалить" className="text-ink-faint hover:text-danger">
                 <Trash2 size={12} />
               </button>
             </div>

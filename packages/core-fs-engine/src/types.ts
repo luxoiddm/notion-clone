@@ -11,7 +11,8 @@ export type PageBlockType =
   | 'table'
   | 'image'
   | 'file'
-  | 'divider';
+  | 'divider'
+  | 'formula';
 
 export interface PageBlock {
   id: string;
@@ -93,6 +94,8 @@ export interface UserMeta {
   accentColor: string | null;
   /** A disabled user can't log in — checked at both login and refresh (so an already-issued session doesn't keep working after the fact) — but keeps every existing page/file/history untouched, unlike deleting the account. Defaults to true for any account created before this field existed (see FsEngine.getUser's own fallback). */
   enabled: boolean;
+  /** Когда уволен (папка перенесена в `dismissed/`); null/нет — действующий. */
+  dismissedAt?: string | null;
 }
 
 export interface HistorySnapshot {
@@ -116,7 +119,31 @@ export interface UserFileInfo {
   size: number;
   uploadedAt: string;
   url: string; // path clients use to fetch/display the file
+  /** Владелец файла (личное хранилище). */
+  ownerId: string;
+  /** Кому выдан доступ: id пользователей; '*' — всем сотрудникам (любому вошедшему). */
+  sharedWith: string[];
+  /** Токен публичной ссылки `/f/{token}` (без входа); null — ссылки нет. */
+  publicToken: string | null;
 }
+
+/** Запись манифеста личного хранилища (`users/{id}/files/manifest.json`). */
+export interface UserFileManifestEntry {
+  originalName: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: string;
+  sharedWith?: string[];
+  publicToken?: string | null;
+}
+
+/**
+ * Где файл из личного хранилища используется — от этого зависит, кто
+ * может открыть его по прямой ссылке (см. files.routes.ts):
+ *   `page:{ownerId}/{projectId}/{pageId}` — вставлен в страницу;
+ *   `chat:{chatId}` — прикреплён к сообщению в чате.
+ */
+export type FileRef = string;
 
 /**
  * A single, admin-managed record — not per-user, not per-project. Lives
@@ -133,8 +160,35 @@ export interface SiteSettings {
   loginLogoUrl: string | null;
   /** Shown in the sidebar header — usually a simpler mark, since it renders small (see NEXT_PUBLIC_HEADER_LOGO_HEIGHT). Deliberately a separate image from loginLogoUrl, not the same one reused at two sizes — a detailed logo that reads fine at login-screen size often turns to mush shrunk into a 32px header row. */
   headerLogoUrl: string | null;
+  /** Фоновое фото экрана входа (растягивается на весь экран, `object-fit: cover`). null — без фото. */
+  loginBackgroundUrl: string | null;
+  /** Свой favicon (иконка вкладки, iPhone, PWA). null — стандартная иконка из apps/web/public. */
+  faviconUrl: string | null;
+  /** Отдельные версии логотипов для тёмной темы. null — используется основной логотип (см. darkLogoMode). */
+  loginLogoDarkUrl: string | null;
+  headerLogoDarkUrl: string | null;
+  /**
+   * Как показывать основной логотип в тёмной теме, если отдельной тёмной
+   * версии нет: 'auto' — инвертировать, только если логотип тёмный
+   * (см. logoTone), 'invert' — всегда инвертировать, 'none' — как есть.
+   */
+  darkLogoMode: DarkLogoMode;
+  /** Тон основных логотипов — считается сервером при загрузке (средняя яркость непрозрачных пикселей). */
+  logoTone: Partial<Record<'login' | 'header', LogoTone>>;
   updatedAt: string;
 }
+
+export type DarkLogoMode = 'auto' | 'invert' | 'none';
+export const DARK_LOGO_MODES: DarkLogoMode[] = ['auto', 'invert', 'none'];
+export type LogoTone = 'dark' | 'light';
+
+/** Размеры favicon, которые генерируются из загруженной картинки (PNG): вкладка, iPhone, PWA. */
+export const FAVICON_SIZES = [32, 180, 192, 512] as const;
+export type FaviconSize = (typeof FAVICON_SIZES)[number];
+
+/** Какие картинки сайта загружает администратор (см. FsEngine.saveSiteLogo). */
+export type SiteImageKind = 'login' | 'header' | 'login-bg' | 'login-dark' | 'header-dark';
+export const SITE_IMAGE_KINDS: SiteImageKind[] = ['login', 'header', 'login-bg', 'login-dark', 'header-dark'];
 
 /**
  * An admin/team-lead-managed public "portal" — a curated tree of pages,
@@ -161,7 +215,7 @@ export interface PublicSite {
 export type PublicNodeStatus = 'pending' | 'approved' | 'rejected';
 
 /** Every existing top-level route in apps/web/app/, plus the API proxy path — a public site can't use any of these as its slug, since Next.js would never actually route a request there to the dynamic public-site page in the first place (static segments always win over a dynamic one at the same level), making the site permanently unreachable at its own supposed URL. */
-export const PUBLIC_SITE_RESERVED_SLUGS = ['admin', 'chat', 'files', 'settings', 'shared', 'api', 'moderation', 'manifest.webmanifest'];
+export const PUBLIC_SITE_RESERVED_SLUGS = ['admin', 'chat', 'files', 'settings', 'shared', 'api', 'moderation', 'more', 'f', 'manifest.webmanifest'];
 
 /**
  * One page's presence within one PublicSite's own tree — this tree is
@@ -185,6 +239,22 @@ export interface PublicNode {
   moderatedBy: string | null;
   moderatedAt: string | null;
   rejectionReason: string | null;
+}
+
+/**
+ * Заявка на публикацию «без раздела» — автор не выбирает публичный
+ * раздел сам, модератор (Admin / Team-Lead) потом распределяет её в
+ * нужный раздел (при этом страница сразу публикуется — решение о
+ * размещении и есть решение о модерации) или отклоняет. Хранится
+ * отдельно от разделов: `storageRoot/public-inbox.json`.
+ */
+export interface PublicInboxItem {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  pageId: string;
+  submittedBy: string;
+  submittedAt: string;
 }
 
 /** Thrown for any fs-engine failure so callers can distinguish engine errors from generic ones. */

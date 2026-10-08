@@ -58,15 +58,15 @@ export function PublicSitesSection() {
 
   return (
     <section>
-      <h2 className="mb-1 text-lg font-semibold text-ink">Публичные страницы</h2>
-      <p className="mb-3 text-sm text-ink-muted">
+      <h2 className="mb-1 text-sm font-semibold text-ink">Публичные разделы</h2>
+      <p className="mb-4 max-w-2xl text-sm text-ink-muted">
         Курируемые деревья документов, доступные без входа в систему по адресу <code>/&lt;название&gt;</code>. Любой
         пользователь может предложить свою страницу для публикации — появляется здесь в очереди на модерацию.
       </p>
 
-      <form onSubmit={handleCreate} className="mb-4 flex flex-wrap items-end gap-2 rounded-lg border border-line/10 bg-surface-panel p-4">
+      <form onSubmit={handleCreate} className="card mb-6 flex flex-wrap items-end gap-3 p-4">
         <div className="min-w-[160px] flex-1">
-          <label className="mb-1 block text-xs text-ink-muted">Адрес (slug)</label>
+          <label className="label">Адрес (slug)</label>
           <input
             required
             value={slug}
@@ -74,22 +74,22 @@ export function PublicSitesSection() {
             placeholder="doc"
             pattern="[-a-z0-9]+"
             title="Только строчные латинские буквы, цифры и дефис"
-            className="w-full rounded-md border border-line/10 bg-surface px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
+            className="input"
           />
         </div>
         <div className="min-w-[200px] flex-1">
-          <label className="mb-1 block text-xs text-ink-muted">Название</label>
+          <label className="label">Название</label>
           <input
             required
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="w-full rounded-md border border-line/10 bg-surface px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
+            className="input"
           />
         </div>
         <button
           type="submit"
           disabled={isCreating}
-          className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
+          className="btn-primary h-9"
         >
           {isCreating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
           Создать
@@ -97,18 +97,18 @@ export function PublicSitesSection() {
       </form>
 
       {sites === null ? (
-        <p className="text-sm text-ink-muted">Загрузка...</p>
+        <div className="skeleton h-32 animate-shimmer rounded-xl" />
       ) : sites.length === 0 ? (
-        <p className="text-sm text-ink-faint">Публичных страниц пока нет.</p>
+        <p className="rounded-xl border border-dashed border-line/[0.12] px-6 py-12 text-center text-sm text-ink-muted">Публичных страниц пока нет — создайте первую формой выше.</p>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-line/10">
+        <div className="card overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="bg-surface-panel text-xs uppercase text-ink-muted">
+            <thead className="border-b border-line/[0.06] bg-surface-panel text-2xs uppercase tracking-[0.06em] text-ink-faint">
               <tr>
-                <th className="px-4 py-2 font-medium">Название</th>
-                <th className="px-4 py-2 font-medium">Адрес</th>
-                <th className="px-4 py-2 font-medium">Статус</th>
-                <th className="px-4 py-2 font-medium text-right">Действия</th>
+                <th className="px-4 py-2.5 font-semibold">Название</th>
+                <th className="px-4 py-2.5 font-semibold">Адрес</th>
+                <th className="px-4 py-2.5 font-semibold">Статус</th>
+                <th className="px-4 py-2.5 font-semibold text-right">Действия</th>
               </tr>
             </thead>
             <tbody>
@@ -116,15 +116,15 @@ export function PublicSitesSection() {
                 <tr
                   key={site.id}
                   onClick={() => router.push(`/moderation/${site.id}`)}
-                  className="cursor-pointer border-t border-line/10 hover:bg-surface-hover"
+                  className="cursor-pointer border-t border-line/[0.06] transition-colors first:border-t-0 hover:bg-surface-hover/60"
                 >
-                  <td className="px-4 py-2">
+                  <td className="px-4 py-3">
                     <span className="flex items-center gap-1 font-medium text-ink">
                       {site.title}
                       <ChevronRight size={14} className="text-ink-faint" />
                     </span>
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="px-4 py-3">
                     <a
                       href={`/${site.slug}`}
                       target="_blank"
@@ -136,21 +136,22 @@ export function PublicSitesSection() {
                       <ExternalLink size={12} />
                     </a>
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="px-4 py-3">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         void toggleEnabled(site);
                       }}
-                      className={`rounded-full px-2 py-0.5 text-xs ${
-                        site.enabled ? 'bg-green-500/15 text-green-600' : 'bg-surface-hover text-ink-faint'
+                      className={`inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium ${
+                        site.enabled ? 'bg-success/10 text-success' : 'bg-surface-sunken text-ink-faint'
                       }`}
                     >
-                      {site.enabled ? 'Включена' : 'Выключена'}
+                      <span className={`h-1.5 w-1.5 rounded-full ${site.enabled ? 'bg-success' : 'bg-ink-faint'}`} />
+                      {site.enabled ? 'Опубликована' : 'Выключена'}
                     </button>
                   </td>
-                  <td className="px-4 py-2 text-right">
+                  <td className="px-4 py-3 text-right">
                     <button
                       type="button"
                       onClick={(e) => {
@@ -158,7 +159,7 @@ export function PublicSitesSection() {
                         void handleDelete(site);
                       }}
                       title="Удалить"
-                      className="rounded p-1 text-ink-muted hover:bg-surface-hover hover:text-red-500"
+                      className="btn-icon h-7 w-7 hover:text-danger"
                     >
                       <Trash2 size={14} />
                     </button>

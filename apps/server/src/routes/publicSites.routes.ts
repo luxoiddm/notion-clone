@@ -49,6 +49,66 @@ export function moderationPublicSitesRoutes(auth: AuthService, engine: FsEngine)
     }),
   );
 
+  // ---- Очередь «без раздела» (регистрируется до '/:id', иначе 'inbox'
+  // перехватился бы как id раздела) --------------------------------------
+  router.get(
+    '/inbox',
+    readLimiter,
+    asyncRoute(async (_req, res) => {
+      const items = await engine.listPublicInbox();
+      res.json(
+        await Promise.all(
+          items.map(async (i) => {
+            try {
+              const meta = await engine.getPageMeta(i.ownerId, i.projectId, i.pageId);
+              return { ...i, pageTitle: meta.title, pageIcon: meta.icon, pageMissing: false };
+            } catch {
+              return { ...i, pageTitle: null, pageIcon: null, pageMissing: true };
+            }
+          }),
+        ),
+      );
+    }),
+  );
+
+  router.get(
+    '/inbox/:itemId/content',
+    readLimiter,
+    asyncRoute(async (req, res) => {
+      try {
+        const item = await engine.getPublicInboxItem(req.params.itemId!);
+        const meta = await engine.getPageMeta(item.ownerId, item.projectId, item.pageId);
+        const content = await engine.getPageContent(item.ownerId, item.projectId, item.pageId);
+        res.json({ title: meta.title, icon: meta.icon, blocks: content.blocks });
+      } catch {
+        res.status(404).json({ error: 'Not found' });
+      }
+    }),
+  );
+
+  router.post(
+    '/inbox/:itemId/assign',
+    documentWriteLimiter,
+    asyncRoute(async (req, res) => {
+      const { siteId } = req.body as { siteId?: string };
+      if (!siteId) return res.status(400).json({ error: 'siteId is required' });
+      try {
+        res.json(await engine.assignPublicInboxItem(req.params.itemId!, siteId, req.user!.id));
+      } catch (err) {
+        res.status(mutationErrorStatus(err)).json({ error: errorMessage(err) });
+      }
+    }),
+  );
+
+  router.delete(
+    '/inbox/:itemId',
+    documentWriteLimiter,
+    asyncRoute(async (req, res) => {
+      await engine.deletePublicInboxItem(req.params.itemId!);
+      res.status(204).end();
+    }),
+  );
+
   router.get(
     '/:id',
     readLimiter,
@@ -195,14 +255,37 @@ export function publicSitesSubmitRoutes(auth: AuthService, engine: FsEngine) {
   const router = Router();
   router.use(requireAuth(auth));
 
-  // Enabled sites only — this is "where can I submit to", not the
-  // moderator's full management list (which also includes disabled ones).
+  // Все разделы, включая выключенные: подать страницу можно и в
+  // выключенный раздел — модератор готовит его содержимое заранее, а
+  // публичный адрес заработает, когда раздел включат.
   router.get(
     '/',
     readLimiter,
     asyncRoute(async (_req, res) => {
-      const sites = await engine.listPublicSites();
-      res.json(sites.filter((s) => s.enabled));
+      res.json(await engine.listPublicSites());
+    }),
+  );
+
+  // Подача без выбора раздела — в общую очередь; модератор сам
+  // распределит страницу в нужный раздел. Регистрируется до
+  // '/:siteId/submit'.
+  router.post(
+    '/inbox/submit',
+    documentWriteLimiter,
+    asyncRoute(async (req, res) => {
+      const { ownerId, projectId, pageId } = req.body as { ownerId?: string; projectId?: string; pageId?: string };
+      if (!ownerId || !projectId || !pageId) {
+        return res.status(400).json({ error: 'ownerId, projectId and pageId are required' });
+      }
+      try {
+        const meta = await engine.getPageMeta(ownerId, projectId, pageId);
+        if (!hasAccess(meta.ownerId, req.user!.id, meta.sharing, 'edit')) {
+          return res.status(403).json({ error: 'You need edit access to this page to submit it' });
+        }
+        res.status(201).json(await engine.submitPageToPublicInbox({ ownerId, projectId, pageId, submittedBy: req.user!.id }));
+      } catch (err) {
+        res.status(mutationErrorStatus(err)).json({ error: errorMessage(err) });
+      }
     }),
   );
 
@@ -224,10 +307,9 @@ export function publicSitesSubmitRoutes(auth: AuthService, engine: FsEngine) {
         if (!hasAccess(meta.ownerId, req.user!.id, meta.sharing, 'edit')) {
           return res.status(403).json({ error: 'You need edit access to this page to submit it' });
         }
-        const site = await engine.getPublicSiteById(req.params.siteId!);
-        if (!site.site.enabled) {
-          return res.status(403).json({ error: 'This public site is currently disabled' });
-        }
+        // Существование раздела проверяем (404, если его нет), но
+        // выключенный раздел подаче не мешает — см. GET '/' выше.
+        await engine.getPublicSiteById(req.params.siteId!);
 
         const node = await engine.submitPageToPublicSite(req.params.siteId!, {
           ownerId,

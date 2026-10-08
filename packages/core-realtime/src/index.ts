@@ -39,6 +39,29 @@ interface ServerToClientEvents {
   /** Emitted whenever a thread's reply count changes (a reply sent or a reply deleted) — the client should update that root message's badge without needing to re-fetch or open the thread. */
   'chat:thread-count-updated': (payload: { chatId: string; threadRootId: string; replyCount: number }) => void;
   'chat:typing': (payload: { chatId: string; userId: string; isTyping: boolean }) => void;
+  /**
+   * Состав чата изменился (добавили/исключили/кто-то вышел). Шлётся в
+   * личные комнаты всех затронутых пользователей — включая только что
+   * добавленных (их ещё нет в комнате чата) и исключённых. `memberIds` —
+   * актуальный состав; пустой массив — чат удалён целиком.
+   */
+  'chat:members-updated': (payload: { chatId: string; memberIds: string[] }) => void;
+  /**
+   * Новое сообщение в одном из чатов пользователя — в личную комнату
+   * каждого участника, кроме автора, независимо от того, открыт ли чат.
+   * Используется клиентом для звука/уведомления (сами сообщения по-прежнему
+   * приходят через 'chat:message' в комнату открытого чата).
+   */
+  'chat:notify': (payload: ChatNotifyPayload) => void;
+}
+
+export interface ChatNotifyPayload {
+  chatId: string;
+  messageId: string;
+  authorId: string;
+  authorName: string;
+  /** Ответ в треде, а не сообщение в основной ленте. */
+  isThreadReply: boolean;
 }
 
 interface SocketData {
@@ -231,6 +254,24 @@ export function emitChatMessageDeleted(io: RealtimeServer, chatId: string, messa
 /** Broadcasts to the room BEFORE the chat's members would have any other way to find out — the caller must emit this while the room still has its members, not after they've been kicked/room's gone stale. */
 export function emitChatDeleted(io: RealtimeServer, chatId: string): void {
   io.to(chatRoomKey(chatId)).emit('chat:deleted', { chatId });
+}
+
+/** Уведомляет затронутых пользователей (по их личным комнатам) об изменении состава чата. */
+export function emitChatMembersUpdated(io: RealtimeServer, userIds: string[], chatId: string, memberIds: string[]): void {
+  for (const uid of new Set(userIds)) io.to(personalRoomKey(uid)).emit('chat:members-updated', { chatId, memberIds });
+}
+
+/** Сигнал о новом сообщении в личные комнаты участников (кроме автора) — для звука. */
+export function emitChatNotify(io: RealtimeServer, memberIds: string[], payload: ChatNotifyPayload): void {
+  for (const uid of new Set(memberIds)) {
+    if (uid === payload.authorId) continue;
+    io.to(personalRoomKey(uid)).emit('chat:notify', payload);
+  }
+}
+
+/** Выводит все сокеты пользователя из комнаты чата — после выхода/исключения он не должен получать новые сообщения. */
+export function removeUserFromChatRoom(io: RealtimeServer, userId: string, chatId: string): void {
+  io.in(personalRoomKey(userId)).socketsLeave(chatRoomKey(chatId));
 }
 
 export function emitChatThreadCountUpdated(io: RealtimeServer, chatId: string, threadRootId: string, replyCount: number): void {

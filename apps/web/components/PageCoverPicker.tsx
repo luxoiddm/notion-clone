@@ -90,7 +90,7 @@ export function PageCoverPicker({
     <div
       ref={pickerRef}
       style={{ position: 'fixed', top: position.top, right: position.right }}
-      className="z-50 w-64 rounded-lg border border-line/10 bg-surface-panel p-3 shadow-panel"
+      className="popover z-50 w-72 p-3"
     >
       <div className="mb-2 flex items-center justify-between">
         <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-faint">
@@ -113,7 +113,7 @@ export function PageCoverPicker({
       </button>
       <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileSelected} className="hidden" />
 
-      {error && <p className="mb-2 text-xs text-red-500">{error}</p>}
+      {error && <p className="mb-2 text-xs text-danger">{error}</p>}
 
       <div className="grid grid-cols-4 gap-1.5">
         {COVER_COLOR_PRESETS.map((preset) => (

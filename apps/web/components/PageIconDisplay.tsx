@@ -6,6 +6,14 @@ import { isTileIconUrl } from '../lib/pageIcons';
  * rendered dimensions when it's a tile image — irrelevant for a plain
  * emoji, which sizes itself from the surrounding text's font-size like
  * any other character.
+ *
+ * `icon` has three distinct states, not two: `null`/`undefined` means
+ * "never configured" — each caller's own `fallback` applies (a 📄 in
+ * the sidebar, a generic file icon elsewhere, nothing at all on the
+ * public page). An empty string `''` means the user explicitly picked
+ * "Без ярлыка" in PageIconPicker — that's a deliberate choice to show
+ * nothing, so it overrides `fallback` too rather than falling through
+ * to it like an unset icon would.
  */
 export function PageIconDisplay({
   icon,
@@ -18,6 +26,7 @@ export function PageIconDisplay({
   fallback?: React.ReactNode;
   className?: string;
 }) {
+  if (icon === '') return null;
   if (!icon) return <>{fallback ?? null}</>;
 
   if (isTileIconUrl(icon)) {

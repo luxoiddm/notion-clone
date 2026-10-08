@@ -25,12 +25,14 @@ export function AccentColorApplier({ accentColor }: { accentColor: string | null
       // rather than leaving a stale inline color in place.
       root.style.removeProperty('--accent');
       root.style.removeProperty('--accent-soft');
+      root.style.removeProperty('--accent-ink');
       return;
     }
 
     const variant = resolvedTheme === 'dark' ? preset.dark : preset.light;
     root.style.setProperty('--accent', variant.accent);
     root.style.setProperty('--accent-soft', variant.accentSoft);
+    root.style.setProperty('--accent-ink', variant.accentInk);
   }, [accentColor, resolvedTheme]);
 
   return null;

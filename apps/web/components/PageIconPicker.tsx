@@ -4,18 +4,22 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { PAGE_ICON_OPTIONS, isTileIconUrl } from '../lib/pageIcons';
 import { api } from '../lib/api';
+import { SmilePlus } from 'lucide-react';
 
 export function PageIconPicker({
   icon,
   onChange,
   readOnly = false,
   size = 56,
+  variant = 'icon',
 }: {
   icon: string | null;
   onChange: (icon: string | null) => void;
   readOnly?: boolean;
   /** Pixel size of the trigger button (square) — defaults to the original 56px used in the sidebar; a larger value (e.g. 128) is used for the icon shown next to the document title. Doesn't affect the picker dropdown's own thumbnail grid, which stays a fixed compact size regardless. */
   size?: number;
+  /** 'add-button' — вместо крупного ярлыка показывает компактную кнопку «Добавить иконку» (над заголовком документа, когда иконка не выбрана). */
+  variant?: 'icon' | 'add-button';
 }) {
   const [open, setOpen] = useState(false);
   // Trigger button — kept separate from the dropdown itself now that the
@@ -77,6 +81,17 @@ export function PageIconPicker({
 
   return (
     <div className="relative inline-block">
+      {variant === 'add-button' ? (
+        <button
+          ref={buttonRef}
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink"
+        >
+          <SmilePlus size={14} />
+          Добавить иконку
+        </button>
+      ) : (
       <button
         ref={buttonRef}
         type="button"
@@ -93,19 +108,20 @@ export function PageIconPicker({
           icon ?? '📄'
         )}
       </button>
+      )}
 
       {open && position && typeof document !== 'undefined' && createPortal(
         <div
           ref={pickerRef}
           style={{ position: 'fixed', top: position.top, left: position.left }}
-          className="z-50 w-52 rounded-lg border border-line/10 bg-surface-panel p-2 shadow-panel">
+          className="popover z-50 w-56 p-2">
           {tileSets && tileSets.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1 border-b border-line/10 pb-2">
               <button
                 type="button"
                 onClick={() => setActiveTab('emoji')}
                 className={`rounded px-2 py-0.5 text-xs ${
-                  activeTab === 'emoji' ? 'bg-accent-soft text-ink' : 'text-ink-muted hover:bg-surface-hover'
+                  activeTab === 'emoji' ? 'bg-accent-soft text-accent-ink' : 'text-ink-muted hover:bg-surface-hover'
                 }`}
               >
                 Эмодзи
@@ -116,7 +132,7 @@ export function PageIconPicker({
                   type="button"
                   onClick={() => setActiveTab(set.name)}
                   className={`rounded px-2 py-0.5 text-xs ${
-                    activeTab === set.name ? 'bg-accent-soft text-ink' : 'text-ink-muted hover:bg-surface-hover'
+                    activeTab === set.name ? 'bg-accent-soft text-accent-ink' : 'text-ink-muted hover:bg-surface-hover'
                   }`}
                 >
                   {set.name}
@@ -168,7 +184,7 @@ export function PageIconPicker({
             </div>
           )}
 
-          {icon && (
+          {icon !== null && (
             <button
               type="button"
               title="Сбросить на стандартный"
@@ -179,6 +195,19 @@ export function PageIconPicker({
               className="mt-2 w-full rounded-md border-t border-line/10 pt-1.5 text-xs text-ink-faint hover:text-ink"
             >
               Сбросить
+            </button>
+          )}
+          {icon !== '' && (
+            <button
+              type="button"
+              title="Убрать ярлык совсем — ничего не будет показано ни в редакторе, ни в сайдбаре, ни на публичной странице"
+              onClick={() => {
+                onChange('');
+                setOpen(false);
+              }}
+              className={`w-full rounded-md text-xs text-ink-faint hover:text-ink ${icon === null ? 'mt-2 border-t border-line/10 pt-1.5' : 'pt-1'}`}
+            >
+              Без ярлыка
             </button>
           )}
         </div>,

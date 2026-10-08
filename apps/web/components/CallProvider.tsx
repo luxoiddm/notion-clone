@@ -4,6 +4,22 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { getSocket } from '../lib/socket';
 import { webrtcApi, type IceServerConfig } from '../lib/api';
 import { createPeerConnection, getLocalMedia, stopStream } from '../lib/webrtc';
+import { claimOnce, playSound, startRingback, startRingtone } from '../lib/sounds';
+
+/** Сколько звонит входящий, прежде чем баннер пропадёт как пропущенный. */
+const RING_TIMEOUT_MS = 45_000;
+/** Сколько ждёт звонящий ответа, прежде чем звонок завершится с «Нет ответа». */
+const NO_ANSWER_TIMEOUT_MS = 60_000;
+/** Ключ localStorage: на входящий уже ответили/отклонили в другой вкладке. */
+const HANDLED_KEY = 'call:handled';
+
+function markHandled(roomId: string) {
+  try {
+    localStorage.setItem(HANDLED_KEY, `${roomId}|${Date.now()}`);
+  } catch {
+    /* ignore */
+  }
+}
 
 interface RemoteStreamEntry {
   userId: string;
@@ -80,6 +96,10 @@ export function CallProvider({
   const screenStreamRef = useRef<MediaStream | null>(null);
   const roomIdRef = useRef<string | null>(null);
   const iceServersRef = useRef<IceServerConfig[]>([]);
+  /** Мы начали звонок (а не присоединились к идущему) — нужны гудки, пока никто не ответил. */
+  const [isCaller, setIsCaller] = useState(false);
+  /** Подавить звук «звонок завершён» (уже прозвучало «занято»). */
+  const silentEndRef = useRef(false);
 
   // Listens for incoming calls globally — this provider is mounted once at
   // the app root (see CallProviderBridge in layout.tsx), so this fires no
@@ -98,11 +118,54 @@ export function CallProvider({
       setIncomingCall(payload);
     };
 
+    // Звонящий положил трубку до ответа — баннер и рингтон убираем.
+    const onEnded = ({ chatId }: { chatId: string }) => {
+      setIncomingCall((prev) => (prev?.chatId === chatId ? null : prev));
+    };
+
     socket.on('call:incoming', onIncoming);
+    socket.on('call:ended', onEnded);
     return () => {
       socket.off('call:incoming', onIncoming);
+      socket.off('call:ended', onEnded);
     };
   }, [accessToken, activeCall]);
+
+  // ---- Звук входящего: рингтон + мигающий заголовок вкладки ---------------
+  useEffect(() => {
+    if (!incomingCall) return;
+    const { roomId } = incomingCall;
+    // Звенит одна вкладка из открытых (остальные показывают только баннер).
+    const stopRing = claimOnce(`ring:${roomId}`, RING_TIMEOUT_MS) ? startRingtone({ maxMs: RING_TIMEOUT_MS }) : () => undefined;
+
+    const originalTitle = document.title;
+    let flip = false;
+    const titleTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        document.title = originalTitle;
+        return;
+      }
+      flip = !flip;
+      document.title = flip ? `📞 ${incomingCall.fromUserDisplayName} звонит…` : originalTitle;
+    }, 1000);
+
+    // Не ответили — звонок считается пропущенным, баннер убираем.
+    const timeout = setTimeout(() => setIncomingCall((prev) => (prev?.roomId === roomId ? null : prev)), RING_TIMEOUT_MS);
+
+    // Ответили или отклонили в другой вкладке.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === HANDLED_KEY && e.newValue?.startsWith(`${roomId}|`)) setIncomingCall((prev) => (prev?.roomId === roomId ? null : prev));
+    };
+    window.addEventListener('storage', onStorage);
+
+    return () => {
+      stopRing();
+      clearInterval(titleTimer);
+      clearTimeout(timeout);
+      document.title = originalTitle;
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [incomingCall]);
 
   const syncRemoteStreams = useCallback(() => {
     setActiveCall((prev) => {
@@ -125,7 +188,9 @@ export function CallProvider({
       socket.off('call:peer-joined');
       socket.off('call:peer-left');
       socket.off('call:signal');
+      socket.off('call:declined');
     }
+    setIsCaller(false);
     setActiveCall(null);
   }, [accessToken]);
 
@@ -220,14 +285,17 @@ export function CallProvider({
 
         const socket = getSocket(accessToken);
 
-        const room = await new Promise<{ id: string; chatId: string } | null>((resolve) => {
-          socket.emit('call:start', { chatId }, (r: { id: string; chatId: string } | null, reason?: string) => {
+        const room = await new Promise<{ id: string; chatId: string; participantIds?: string[] } | null>((resolve) => {
+          socket.emit('call:start', { chatId }, (r: { id: string; chatId: string; participantIds?: string[] } | null, reason?: string) => {
             if (!r) setError(reason ?? 'Не удалось начать звонок');
             resolve(r);
           });
         });
         if (!room) throw new Error('start-failed');
         roomIdRef.current = room.id;
+        // В комнате никого — значит, звонок начали мы: будут гудки до ответа.
+        setIsCaller((room.participantIds ?? []).length === 0);
+        silentEndRef.current = false;
 
         const joined = await new Promise<boolean>((resolve) => {
           socket.emit('call:join', { roomId: room.id }, (ok: boolean, reason?: string) => {
@@ -279,6 +347,15 @@ export function CallProvider({
             // call screen indefinitely.
             leaveCall();
           }
+        });
+
+        // Все, кому звонили, отклонили — «занято» и завершаем.
+        socket.on('call:declined', ({ displayName, allDeclined }: { userId: string; displayName: string; allDeclined: boolean }) => {
+          if (!allDeclined || peersRef.current.size > 0) return;
+          silentEndRef.current = true;
+          playSound('busy');
+          setError(displayName ? `${displayName} отклонил(а) звонок` : 'Звонок отклонён');
+          leaveCall();
         });
 
         socket.on('call:signal', async ({ fromUserId, data }: { fromUserId: string; data: SignalPayload }) => {
@@ -404,11 +481,53 @@ export function CallProvider({
   const joinIncomingCall = useCallback(async () => {
     if (!incomingCall) return;
     const chatId = incomingCall.chatId;
+    markHandled(incomingCall.roomId);
     setIncomingCall(null);
     await startOrJoinCall(chatId);
   }, [incomingCall, startOrJoinCall]);
 
-  const declineIncomingCall = useCallback(() => setIncomingCall(null), []);
+  const declineIncomingCall = useCallback(() => {
+    if (incomingCall) {
+      markHandled(incomingCall.roomId);
+      if (accessToken) getSocket(accessToken).emit('call:decline', { roomId: incomingCall.roomId });
+    }
+    setIncomingCall(null);
+  }, [accessToken, incomingCall]);
+
+  // ---- Звуки активного звонка ---------------------------------------------
+  const remoteCount = activeCall?.remoteStreams.length ?? 0;
+  const inCall = !!activeCall;
+  const prevRef = useRef({ inCall: false, remoteCount: 0, connected: false });
+
+  useEffect(() => {
+    const prev = prevRef.current;
+    if (inCall && remoteCount > prev.remoteCount) {
+      playSound(prev.remoteCount === 0 && !prev.connected ? 'call-connected' : 'peer-joined');
+    } else if (inCall && remoteCount < prev.remoteCount && remoteCount > 0) {
+      playSound('peer-left');
+    } else if (!inCall && prev.inCall) {
+      if (!silentEndRef.current) playSound('call-ended');
+      silentEndRef.current = false;
+    }
+    prevRef.current = { inCall, remoteCount, connected: inCall && (prev.connected || remoteCount > 0) };
+  }, [inCall, remoteCount]);
+
+  // Гудки, пока никто не ответил; через минуту — «Нет ответа».
+  const waiting = inCall && isCaller && remoteCount === 0;
+  useEffect(() => {
+    if (!waiting) return;
+    const stop = startRingback({ maxMs: NO_ANSWER_TIMEOUT_MS });
+    const timeout = setTimeout(() => {
+      silentEndRef.current = true;
+      playSound('busy');
+      setError('Нет ответа');
+      leaveCall();
+    }, NO_ANSWER_TIMEOUT_MS);
+    return () => {
+      stop();
+      clearTimeout(timeout);
+    };
+  }, [waiting, leaveCall]);
 
   return (
     <CallContext.Provider

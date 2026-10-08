@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BLOCK_TAG, BLOCK_CLASS } from '../lib/blockStyles';
+import { BLOCK_TAG, BLOCK_CLASS, BLOCK_SPACING } from '../lib/blockStyles';
 import {
   GripVertical,
   Plus,
@@ -11,7 +11,7 @@ import {
   Code2,
   Link as LinkIcon,
   FileText,
-  Download,
+  Eye,
   Image as ImageIcon,
   ImagePlus,
   Paperclip,
@@ -20,22 +20,27 @@ import {
   ChevronDown,
   FileSymlink,
   SquareCode,
+  RemoveFormatting,
   type LucideIcon,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { PageBlock, PageBlockType } from '../lib/types';
 import { randomUUID } from '../lib/uuid';
 import { withAuthToken, filesApi, type UserFileInfo } from '../lib/api';
+import { FilePreviewDialog } from './FilePreviewDialog';
 import { sanitizeInlineHtml } from '../lib/sanitize';
 import { PageIconPicker } from './PageIconPicker';
 import { PageCoverPicker } from './PageCoverPicker';
 import { useTheme } from 'next-themes';
 import { isCoverColor, resolveCoverColorHex, textColorForCover } from '../lib/coverColors';
-import { htmlToBlocks, plainTextToBlocks } from '../lib/pasteToBlocks';
+import { htmlToBlocks, plainTextToBlocks, escapeToHtml } from '../lib/pasteToBlocks';
+import { FormulaBlockContent, hydrateInlineFormulas } from './FormulaBlock';
+import { editorWidthStyle } from '../lib/editorWidth';
 import { useToast } from './Toast';
 import { SlashMenu, SLASH_OPTIONS, filterSlashOptions } from './SlashMenu';
 import { FilePickerDialog } from './FilePickerDialog';
 import { PagePickerDialog, type AttachedPageRef } from './PagePickerDialog';
+import { PageBlockPickerDialog } from './PageBlockPickerDialog';
 
 interface EditorProps {
   title: string;
@@ -50,8 +55,11 @@ interface EditorProps {
   onBlocksChange: (updater: PageBlock[] | ((prev: PageBlock[]) => PageBlock[])) => void;
   readOnly?: boolean;
   currentUserId: string;
-  /** Called when a page-reference link (inserted via the "attach document" toolbar button) is opened — Ctrl/Cmd+click, matching how a regular link already opens. */
-  onOpenPageRef: (ownerId: string, projectId: string, pageId: string) => void;
+  /** Called when a page-reference link (inserted via the "attach document" toolbar button) is opened — Ctrl/Cmd+click, matching how a regular link already opens. `blockId`, when present, means the link targets a specific block within that page rather than the page as a whole — see `insertPageRefLink`'s own doc comment. */
+  onOpenPageRef: (ownerId: string, projectId: string, pageId: string, blockId?: string) => void;
+  /** Set by the parent right after `onOpenPageRef` navigates somewhere with a target block — this component scrolls to and briefly highlights that block once it actually appears in `blocks` (which may be a render or two after navigation starts, while the target page's content is still loading). `onScrolledToBlock` clears it back to null in the parent once handled, so a later click on the *same* block-linking anchor can trigger the scroll again. */
+  scrollToBlockId?: string | null;
+  onScrolledToBlock?: () => void;
 }
 
 // Block types that need a file (picked from personal storage or uploaded
@@ -81,6 +89,7 @@ function matchBlockMarkdown(text: string): PageBlockType | null {
   if (text === '> ') return 'callout';
   if (text === '```') return 'code';
   if (text === '---') return 'divider';
+  if (text === '$$') return 'formula';
   return null;
 }
 // INLINE_MARKDOWN_INSERT_POINT
@@ -102,8 +111,21 @@ interface InlineMarkdownMatch {
  * single-star italic, and the italic check requires the opening star not
  * be preceded by another star, so a completed bold pattern never also
  * reads as italic on top.
+ *
+ * The underscore-italic check additionally requires a non-word character
+ * (or start of block) before the opening `_` and — via `charAfterCaret`,
+ * since text after the cursor isn't part of `textBeforeCursor` at all —
+ * a non-word character (or end of block) right after the closing `_`.
+ * Matches CommonMark's own rule that `_..._`, unlike `*...*`, doesn't
+ * work *inside* a word: without this, typing a plain variable name like
+ * `v_in_left` (no backslash, ordinary prose, not even LaTeX) would
+ * misfire into `v<i>in</i>left` the instant the second underscore was
+ * typed, well before the rest of the word existed to reveal that this
+ * was never meant as emphasis. `pasteToBlocks.ts`'s `inlineMarkdownToHtml`
+ * applies the same rule for pasted text — see its own doc comment for the
+ * full reasoning (there also covering `\_`-escaped LaTeX specifically).
  */
-function matchInlineMarkdown(textBeforeCursor: string): InlineMarkdownMatch | null {
+function matchInlineMarkdown(textBeforeCursor: string, charAfterCursor: string): InlineMarkdownMatch | null {
   let m: RegExpExecArray | null;
 
   m = /\*\*([^*\n]+)\*\*$/.exec(textBeforeCursor);
@@ -121,21 +143,28 @@ function matchInlineMarkdown(textBeforeCursor: string): InlineMarkdownMatch | nu
   m = /(?<!\*)\*([^*\n]+)\*$/.exec(textBeforeCursor);
   if (m && m[1]) return { start: m.index, end: textBeforeCursor.length, innerText: m[1], tag: 'i' };
 
-  m = /(?<!_)_([^_\n]+)_$/.exec(textBeforeCursor);
-  if (m && m[1]) return { start: m.index, end: textBeforeCursor.length, innerText: m[1], tag: 'i' };
+  m = /(?<!_)(?<!\w)_([^_\n]+)_$/.exec(textBeforeCursor);
+  if (m && m[1] && !/\w/.test(charAfterCursor)) return { start: m.index, end: textBeforeCursor.length, innerText: m[1], tag: 'i' };
 
   return null;
+}
+
+/** Plain-text [start, end) offset pair of `range`, measured from the start of `root`'s text content — generalizes `getCaretOffsetWithin` below to a non-collapsed range too. */
+function getRangeOffsetsWithin(root: HTMLElement, range: Range): { start: number; end: number } {
+  const startRange = range.cloneRange();
+  startRange.selectNodeContents(root);
+  startRange.setEnd(range.startContainer, range.startOffset);
+  const endRange = range.cloneRange();
+  endRange.selectNodeContents(root);
+  endRange.setEnd(range.endContainer, range.endOffset);
+  return { start: startRange.toString().length, end: endRange.toString().length };
 }
 
 /** Plain-text offset of the current caret, measured from the start of `root`'s text content. */
 function getCaretOffsetWithin(root: HTMLElement): number {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) return 0;
-  const range = selection.getRangeAt(0);
-  const preRange = range.cloneRange();
-  preRange.selectNodeContents(root);
-  preRange.setEnd(range.endContainer, range.endOffset);
-  return preRange.toString().length;
+  return getRangeOffsetsWithin(root, selection.getRangeAt(0)).end;
 }
 
 /** Converts a plain-text [start, end) offset pair (relative to `root`) into a DOM Range, walking text nodes to find the right spots. */
@@ -184,8 +213,10 @@ function tryConvertInlineMarkdown(el: HTMLElement): boolean {
   if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return false;
 
   const caretOffset = getCaretOffsetWithin(el);
-  const textBeforeCaret = (el.textContent ?? '').slice(0, caretOffset);
-  const match = matchInlineMarkdown(textBeforeCaret);
+  const fullText = el.textContent ?? '';
+  const textBeforeCaret = fullText.slice(0, caretOffset);
+  const charAfterCaret = fullText[caretOffset] ?? '';
+  const match = matchInlineMarkdown(textBeforeCaret, charAfterCaret);
   if (!match) return false;
 
   const range = createRangeFromOffsets(el, match.start, match.end);
@@ -197,17 +228,31 @@ function tryConvertInlineMarkdown(el: HTMLElement): boolean {
   if (match.tag === 'a') tag.setAttribute('href', match.href ?? '#');
   range.insertNode(tag);
 
-  // A zero-width spacer after the tag so typing continues outside it, not
-  // inside — otherwise the very next character would extend the bold/
-  // italic/link run instead of starting fresh plain text.
-  const spacer = document.createTextNode('\u200B');
-  tag.after(spacer);
-
-  const newRange = document.createRange();
-  newRange.setStart(spacer, 1);
-  newRange.collapse(true);
-  selection.removeAllRanges();
-  selection.addRange(newRange);
+  // Places the caret in the tag's *parent*, right after the tag itself
+  // — a collapsed Range/Selection can sit between two child nodes of an
+  // element just as well as inside a text node, and typing at that
+  // position makes the browser insert a fresh plain text node there on
+  // its own. No placeholder character needed for this, unlike an
+  // earlier version of this function which inserted a zero-width space
+  // (`\u200B`) as a landing spot instead: that character became a
+  // permanent, invisible pollutant of the *stored* content — it doesn't
+  // get cleaned up even if the surrounding formatting is later removed
+  // via the toolbar, since toggling `<i>`/`<b>` off doesn't touch a
+  // separate sibling text node — silently breaking substring search on
+  // any word it ended up inside (e.g. "разреш\u200Bенная" no longer
+  // matching a search for "разрешенная"). sanitizeInlineHtml() (see
+  // sanitize.ts) additionally strips any stray zero-width space it
+  // finds, so a block already carrying one from before this fix heals
+  // itself the next time that block is edited and saved.
+  const parent = tag.parentNode;
+  if (parent) {
+    const indexAfterTag = Array.prototype.indexOf.call(parent.childNodes, tag) + 1;
+    const newRange = document.createRange();
+    newRange.setStart(parent, indexAfterTag);
+    newRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(newRange);
+  }
 
   return true;
 }
@@ -302,6 +347,12 @@ function blockToClipboardHtmlSingle(block: PageBlock): string {
       return `<blockquote>${block.content}</blockquote>`;
     case 'code':
       return `<pre>${block.content}</pre>`;
+    case 'formula':
+      // block.content is a raw LaTeX string, not HTML (unlike every
+      // other case here) — must be escaped before going into markup,
+      // same reasoning as escapeToHtml's own doc comment in
+      // pasteToBlocks.ts.
+      return `<pre>${escapeToHtml(block.content)}</pre>`;
     case 'divider':
       return '<hr>';
     case 'todo':
@@ -319,6 +370,11 @@ function blockToClipboardHtmlSingle(block: PageBlock): string {
 function blockToPlainText(block: PageBlock): string {
   if (block.type === 'divider') return '---';
   if (block.type === 'image' || block.type === 'file') return block.fileName ?? block.content;
+  // content is already plain LaTeX text, not HTML — running it through
+  // the innerHTML→textContent round-trip below (like every other block
+  // type) would misinterpret any literal '<'/'>'/'&' in the formula as
+  // markup instead of taking it as-is.
+  if (block.type === 'formula') return block.content;
   const div = document.createElement('div');
   div.innerHTML = block.content;
   const text = div.textContent ?? '';
@@ -339,11 +395,45 @@ export function Editor({
   readOnly = false,
   currentUserId,
   onOpenPageRef,
+  scrollToBlockId,
+  onScrolledToBlock,
 }: EditorProps) {
   const [slashState, setSlashState] = useState<{ blockId: string; query: string; position: { top: number; left: number } } | null>(null);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [dragOverAssets, setDragOverAssets] = useState(false);
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null);
+  /**
+   * Briefly highlights a block after navigating to it via a page-
+   * reference link that targets a specific block (see the effect below
+   * and `insertPageRefLink`'s own doc comment) — separate from
+   * `scrollToBlockId` itself (a prop, owned by the parent) because the
+   * highlight needs to fade back to nothing a couple seconds later
+   * regardless of what the parent does with its own state afterward.
+   */
+  const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
+
+  // Scrolls to and briefly highlights the block a page-reference link
+  // pointed at, once it actually exists in `blocks` — which, for a link
+  // that navigated to a *different* page, may not be true on the very
+  // render this effect first sees `scrollToBlockId` change, since that
+  // page's own content is still loading at that point. Re-running on
+  // every `blocks` change (not just `scrollToBlockId`) is what lets it
+  // wait out that load rather than firing once, finding nothing, and
+  // giving up — the effect keeps re-checking as new block data arrives
+  // until it finds the target or `scrollToBlockId` is cleared.
+  useEffect(() => {
+    if (!scrollToBlockId) return;
+    if (!blocks.some((b) => b.id === scrollToBlockId)) return; // not loaded yet — wait for the next `blocks` update
+    const el = document.querySelector<HTMLElement>(`[data-block-row-id="${scrollToBlockId}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedBlockId(scrollToBlockId);
+    onScrolledToBlock?.();
+    const timeout = setTimeout(() => setHighlightedBlockId(null), 2000);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollToBlockId, blocks]);
+
   const [coverPickerOpen, setCoverPickerOpen] = useState(false);
   const coverButtonRef = useRef<HTMLButtonElement>(null);
   const { resolvedTheme } = useTheme();
@@ -364,7 +454,28 @@ export function Editor({
   const [sourceText, setSourceText] = useState('');
 
   const [filePickerState, setFilePickerState] = useState<{ blockId: string; kind: 'image' | 'file' } | null>(null);
-  const [pageRefPickerBlockId, setPageRefPickerBlockId] = useState<string | null>(null);
+  /**
+   * Drives the two-step "link to a document" flow (see `insertPageRefLink`
+   * below for the full picture). `selection` is captured at the moment
+   * the toolbar button is clicked — a `{start, end}` plain-text offset
+   * pair (see `getRangeOffsetsWithin`) rather than the live browser
+   * `Selection`/`Range` itself, because opening `PagePickerDialog` moves
+   * focus away from the contentEditable block and would otherwise
+   * collapse or lose it entirely before the user finishes picking a
+   * target. `null` means there was no non-empty selection when the
+   * button was clicked — the existing "insert a 📄 Title chip" behavior,
+   * unchanged from before this two-step flow existed. `targetPage` is
+   * set once `PagePickerDialog` (step 1) resolves, at which point
+   * `PageBlockPickerDialog` (step 2) takes over; both dialogs read from
+   * and clear this same state object rather than each owning separate
+   * state, so there's exactly one place tracking "is this flow active
+   * and how far along is it".
+   */
+  const [pageRefFlow, setPageRefFlow] = useState<{
+    blockId: string;
+    selection: { start: number; end: number } | null;
+    targetPage: AttachedPageRef | null;
+  } | null>(null);
   // Tracks in-flight clipboard-image uploads as a purely local UI concern,
   // deliberately kept OUT of `blocks` — that array is the persisted model
   // (autosaved 3s after every change), and a "Загрузка..." placeholder has
@@ -688,10 +799,11 @@ export function Editor({
   // Page-reference links (inserted via the "attach document" toolbar
   // button) always need interception, in *both* edit and read-only
   // rendering, regardless of Ctrl/Cmd — their href
-  // (/page-ref/{ownerId}/{projectId}/{pageId}) isn't a real route
-  // anything serves, so unlike a genuine URL there's no "just let the
-  // browser handle it" fallback to lean on; native navigation there
-  // would just 404. A genuine external/internal link is different: in
+  // (/page-ref/{ownerId}/{projectId}/{pageId}, optionally with a
+  // trailing /{blockId} when the link targets a specific block within
+  // that page) isn't a real route anything serves, so unlike a genuine
+  // URL there's no "just let the browser handle it" fallback to lean
+  // on; native navigation there would just 404. A genuine external/internal link is different: in
   // read-only rendering (contentEditable off) native <a> click already
   // works correctly, nothing to do here — in edit mode, only
   // Ctrl/Cmd+click should navigate, since a plain click needs to place
@@ -703,11 +815,11 @@ export function Editor({
     if (!anchor) return;
 
     const href = anchor.getAttribute('href') ?? '#';
-    const pageRefMatch = href.match(/^\/page-ref\/([^/]+)\/([^/]+)\/([^/]+)$/);
+    const pageRefMatch = href.match(/^\/page-ref\/([^/]+)\/([^/]+)\/([^/]+)(?:\/([^/]+))?$/);
     if (pageRefMatch) {
       e.preventDefault();
-      const [, ownerId, projectId, pageId] = pageRefMatch;
-      if (ownerId && projectId && pageId) onOpenPageRef(ownerId, projectId, pageId);
+      const [, ownerId, projectId, pageId, blockId] = pageRefMatch;
+      if (ownerId && projectId && pageId) onOpenPageRef(ownerId, projectId, pageId, blockId);
       return;
     }
 
@@ -904,9 +1016,12 @@ export function Editor({
 
   // Applies inline formatting to the current text selection. Uses
   // execCommand for the well-supported cases and manual Range surgery for
-  // inline code (no native command for that) — see lib/sanitize.ts for why
-  // this stays safe to store and re-render for other viewers.
-  const applyFormat = (cmd: 'bold' | 'italic' | 'strikeThrough' | 'code' | 'link') => {
+  // inline code and clearing formatting (no native command reliably does
+  // either — execCommand('removeFormat') in particular is inconsistent
+  // across browsers about which tags it strips, and doesn't touch links
+  // at all in most of them) — see lib/sanitize.ts for why this stays
+  // safe to store and re-render for other viewers.
+  const applyFormat = (cmd: 'bold' | 'italic' | 'strikeThrough' | 'code' | 'link' | 'clearFormat') => {
     if (!focusedBlockId) return;
     const el = document.querySelector<HTMLElement>(`[data-block-id="${focusedBlockId}"]`);
     if (!el) return;
@@ -928,6 +1043,22 @@ export function Editor({
       const url = window.prompt('Ссылка (https://...)');
       if (!url) return;
       document.execCommand('createLink', false, url);
+    } else if (cmd === 'clearFormat') {
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0 && !selection.isCollapsed && el.contains(selection.anchorNode)) {
+        const range = selection.getRangeAt(0);
+        // `range.toString()` is exactly the selection's visible plain
+        // text, with every tag — bold, italic, strike, inline code,
+        // link, even a katex-inline span — already stripped out by the
+        // DOM itself; replacing the whole selected range with a single
+        // text node of just that is a full "back to plain text" in one
+        // step, unlike execCommand('removeFormat') which is inconsistent
+        // about which of these it actually touches.
+        const plainText = range.toString();
+        range.deleteContents();
+        range.insertNode(document.createTextNode(plainText));
+        selection.removeAllRanges();
+      }
     } else {
       document.execCommand(cmd);
     }
@@ -936,47 +1067,84 @@ export function Editor({
     updateBlock(focusedBlockId, { content: html });
   };
 
-  // Inserts a link to another document — reused PagePickerDialog (same
-  // one chat attachments use) picks the page, this wires it into the
-  // current block's content at the cursor.
+  // Inserts a link to another document — PagePickerDialog (same one chat
+  // attachments use) picks the page, then, for this flow specifically,
+  // PageBlockPickerDialog optionally narrows it down to a single block
+  // within that page, and this wires the result into the current
+  // block's content.
+  //
+  // Two distinct outcomes depending on `pageRefFlow.selection` (captured
+  // by the toolbar button's own onClick, before either dialog could
+  // steal focus and collapse it — see that state's own doc comment):
+  //   - There WAS a non-empty text selection: wrap exactly that text in
+  //     an <a> in place, keeping it as the visible link text. This is
+  //     the case the two-step picker above exists for — making an
+  //     existing word or phrase ("разрешенная", say) into a link to
+  //     wherever it's actually explained, in this document or another.
+  //   - No selection (or none the flow could capture — e.g. the toolbar
+  //     click already blurred the block on some mobile browsers):
+  //     falls back to the original behavior, inserting a brand new
+  //     "📄 Title" chip at the cursor (or appended at the end if there's
+  //     nowhere else to put it). Unchanged from before this two-step
+  //     flow existed.
   //
   // The reference has to survive sanitizeInlineHtml(), which strips
   // every attribute off an <a> except href/target/rel (see sanitize.ts —
   // a real stored-XSS concern, not overcautious) — so a custom
-  // `data-page-ref` attribute is a non-starter. Instead the reference is
-  // encoded *into* href itself as `/page-ref/{ownerId}/{projectId}/
-  // {pageId}` — passes sanitizeInlineHtml's href safety check (it allows
-  // any path starting with `/`) untouched, and doesn't collide with a
-  // real route since nothing in the app actually serves that path;
-  // handleLinkClick recognizes the prefix and intercepts the click for
-  // in-app navigation instead of letting it act like a normal link.
-  const insertPageRefLink = (page: AttachedPageRef) => {
-    const blockId = pageRefPickerBlockId;
-    setPageRefPickerBlockId(null);
-    if (!blockId) return;
+  // `data-page-ref`/`data-block-id` attribute is a non-starter. Instead
+  // the reference is encoded *into* href itself as `/page-ref/{ownerId}/
+  // {projectId}/{pageId}`, with an optional trailing `/{blockId}` when a
+  // specific block was chosen — passes sanitizeInlineHtml's href safety
+  // check (it allows any path starting with `/`, regardless of segment
+  // count) untouched, and doesn't collide with a real route since
+  // nothing in the app actually serves that path; handleLinkClick
+  // recognizes the prefix and intercepts the click for in-app navigation
+  // (plus scrolling to the target block, if any) instead of letting it
+  // act like a normal link.
+  const insertPageRefLink = (page: AttachedPageRef, targetBlockId: string | null) => {
+    const flow = pageRefFlow;
+    setPageRefFlow(null);
+    if (!flow) return;
+    const { blockId, selection } = flow;
     const el = document.querySelector<HTMLElement>(`[data-block-id="${blockId}"]`);
     if (!el) return;
     el.focus();
 
+    const href = `/page-ref/${page.ownerId}/${page.projectId}/${page.pageId}${targetBlockId ? `/${targetBlockId}` : ''}`;
     const anchor = document.createElement('a');
-    anchor.setAttribute('href', `/page-ref/${page.ownerId}/${page.projectId}/${page.pageId}`);
-    anchor.textContent = `📄 ${page.title}`;
+    anchor.setAttribute('href', href);
 
-    const selection = window.getSelection();
-    const range = selection && selection.rangeCount > 0 && el.contains(selection.anchorNode) ? selection.getRangeAt(0) : null;
-
-    if (range) {
-      range.deleteContents();
-      range.insertNode(anchor);
-      range.setStartAfter(anchor);
-      range.collapse(true);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
+    if (selection) {
+      const range = createRangeFromOffsets(el, selection.start, selection.end);
+      if (range) {
+        anchor.appendChild(range.extractContents());
+        range.insertNode(anchor);
+        range.setStartAfter(anchor);
+        range.collapse(true);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
     } else {
-      // No active selection in this block (toolbar click blurred it,
-      // common on mobile/some browsers) — append at the end rather than
-      // silently dropping the link.
-      el.appendChild(anchor);
+      anchor.textContent = `📄 ${page.title}`;
+      const currentSelection = window.getSelection();
+      const range =
+        currentSelection && currentSelection.rangeCount > 0 && el.contains(currentSelection.anchorNode)
+          ? currentSelection.getRangeAt(0)
+          : null;
+      if (range) {
+        range.deleteContents();
+        range.insertNode(anchor);
+        range.setStartAfter(anchor);
+        range.collapse(true);
+        currentSelection?.removeAllRanges();
+        currentSelection?.addRange(range);
+      } else {
+        // No active selection in this block (toolbar click blurred it,
+        // common on mobile/some browsers) — append at the end rather than
+        // silently dropping the link.
+        el.appendChild(anchor);
+      }
     }
 
     const html = sanitizeInlineHtml(el.innerHTML);
@@ -1090,11 +1258,14 @@ export function Editor({
     return map;
   }, [blocks]);
 
+  const keyboardInset = useKeyboardInset();
+
   return (
     <div
       ref={containerRef}
       id="print-root"
-      className="mx-auto min-h-full w-full max-w-3xl px-6 py-10 sm:px-16"
+      className="mx-auto min-h-full w-full px-5 pb-32 pt-6 sm:px-16 md:pb-10"
+      style={editorWidthStyle}
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes('Files') && !e.dataTransfer.types.includes(BLOCK_DRAG_MIME)) return;
         e.preventDefault();
@@ -1103,7 +1274,13 @@ export function Editor({
       onDragLeave={() => setDragOverAssets(false)}
     >
       {!readOnly && (
-        <div className="no-print sticky top-0 z-10 mb-4 flex w-fit flex-wrap items-center gap-0.5 rounded-lg border border-line/10 bg-surface-panel p-1 shadow-panel">
+        <div
+          role="toolbar"
+          aria-label="Форматирование"
+          // Телефон: панель прижата к низу экрана — над клавиатурой (см. useKeyboardInset), прокручивается вбок.
+          style={keyboardInset ? { bottom: keyboardInset } : undefined}
+          className="no-print fixed inset-x-0 bottom-0 z-30 flex flex-nowrap items-center gap-0.5 overflow-x-auto border-t border-line/[0.08] bg-surface-panel px-1.5 pt-1 md:backdrop-blur-md [padding-bottom:max(var(--safe-bottom),4px)] max-md:[&_button]:h-11 max-md:[&_button]:min-w-[44px] md:sticky md:inset-x-auto md:bottom-auto md:top-3 md:z-10 md:mb-6 md:w-fit md:max-w-full md:flex-wrap md:overflow-visible md:rounded-lg md:border-0 md:bg-surface-raised/90 md:p-1 md:shadow-pop"
+        >
           {!isSourceView && (
             <>
               <BlockTypeDropdown
@@ -1118,10 +1295,21 @@ export function Editor({
               <ToolbarButton icon={Strikethrough} label="Зачёркнутый" onClick={() => applyFormat('strikeThrough')} />
               <ToolbarButton icon={Code2} label="Код (инлайн)" onClick={() => applyFormat('code')} />
               <ToolbarButton icon={LinkIcon} label="Ссылка (открыть можно Ctrl/Cmd+клик)" onClick={() => applyFormat('link')} />
+              <ToolbarButton icon={RemoveFormatting} label="Очистить форматирование" onClick={() => applyFormat('clearFormat')} />
               <ToolbarButton
                 icon={FileSymlink}
-                label="Ссылка на документ (свой или расшаренный)"
-                onClick={() => focusedBlockId && setPageRefPickerBlockId(focusedBlockId)}
+                label="Ссылка на документ (свой или расшаренный) — выделите текст, чтобы сделать его ссылкой"
+                onClick={() => {
+                  if (!focusedBlockId) return;
+                  const el = document.querySelector<HTMLElement>(`[data-block-id="${focusedBlockId}"]`);
+                  const domSelection = window.getSelection();
+                  let selection: { start: number; end: number } | null = null;
+                  if (el && domSelection && domSelection.rangeCount > 0 && !domSelection.isCollapsed && el.contains(domSelection.anchorNode)) {
+                    const offsets = getRangeOffsetsWithin(el, domSelection.getRangeAt(0));
+                    if (offsets.end > offsets.start) selection = offsets;
+                  }
+                  setPageRefFlow({ blockId: focusedBlockId, selection, targetPage: null });
+                }}
               />
 
               <ToolbarSeparator />
@@ -1164,8 +1352,11 @@ export function Editor({
         </div>
       )}
 
-      {cover ? (
-        <div className="relative -mx-6 -mt-10 mb-6 h-56 overflow-hidden sm:-mx-16 sm:h-64">
+      {/* Шапка документа: обложка (необязательно), крупный ярлык страницы
+          и заголовок рядом с ним. При наличии обложки ярлык «наезжает» на
+          её нижний край — так он визуально связывает обложку и заголовок. */}
+      {cover && (
+        <div className="relative -mx-6 h-48 overflow-hidden rounded-xl sm:-mx-16 sm:h-60">
           <div
             className="absolute inset-0"
             style={
@@ -1174,27 +1365,31 @@ export function Editor({
                 : { backgroundImage: `url(${withAuthToken(cover)})`, backgroundSize: 'cover', backgroundPosition: 'center' }
             }
           />
-          {/* Dark gradient overlay only for image covers — keeps the
-              title legible regardless of what an uploaded photo's own
-              brightness happens to be, without needing to inspect the
-              image itself. Solid colors don't get this at all: the
-              light presets (sand, cloud, ...) rely on switching to dark
-              title text instead (see coverTextColor below) — a black
-              gradient on top would both look wrong on a light color and
-              fight against that dark text's own contrast. */}
-          {!isCoverColor(cover) && <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />}
+          {!isCoverColor(cover) && <div className="absolute inset-0 bg-gradient-to-t from-black/25 to-transparent" />}
           {!readOnly && (
-            <button
-              type="button"
-              onClick={() => setCoverPickerOpen((v) => !v)}
-              ref={coverButtonRef}
-              className={clsx(
-                'no-print absolute right-3 top-3 z-10 rounded-md px-2.5 py-1.5 text-xs backdrop-blur-sm',
-                coverTextColor === 'dark' ? 'bg-white/60 text-ink hover:bg-white/80' : 'bg-black/30 text-white hover:bg-black/50',
+            <div className="no-print absolute right-3 top-3 z-10 flex items-center gap-1.5">
+              {icon === '' && (
+                <div
+                  className={clsx(
+                    'rounded-md backdrop-blur-md [&_button]:!text-current',
+                    coverTextColor === 'dark' ? 'bg-white/60 text-ink' : 'bg-black/30 text-white',
+                  )}
+                >
+                  <PageIconPicker icon={icon} onChange={onIconChange} variant="add-button" />
+                </div>
               )}
-            >
-              Изменить обложку
-            </button>
+              <button
+                type="button"
+                onClick={() => setCoverPickerOpen((v) => !v)}
+                ref={coverButtonRef}
+                className={clsx(
+                  'rounded-md px-2.5 py-1.5 text-xs font-medium backdrop-blur-md transition-colors',
+                  coverTextColor === 'dark' ? 'bg-white/60 text-ink hover:bg-white/80' : 'bg-black/30 text-white hover:bg-black/50',
+                )}
+              >
+                Изменить обложку
+              </button>
+            </div>
           )}
           {coverPickerOpen && (
             <PageCoverPicker
@@ -1205,60 +1400,58 @@ export function Editor({
               anchorRef={coverButtonRef}
             />
           )}
-          <div className="clear-both absolute inset-x-0 bottom-0 px-6 pb-5 sm:px-16">
-            {(icon || !readOnly) && (
-              <div className="float-left mb-1 mr-4">
-                <PageIconPicker icon={icon} onChange={onIconChange} readOnly={readOnly} size={96} />
-              </div>
-            )}
-            <EditableTitle
-              title={title}
-              onTitleChange={onTitleChange}
-              readOnly={readOnly}
-              onEnter={() => focusBlock(blocks[0]?.id ?? '')}
-              onCover={coverTextColor}
-            />
-            <div className="clear-both" />
-          </div>
         </div>
-      ) : (
-        <>
-          {!readOnly && (
-            <button
-              type="button"
-              onClick={() => setCoverPickerOpen((v) => !v)}
-              ref={coverButtonRef}
-              className="no-print relative mb-3 flex items-center gap-1.5 text-xs text-ink-faint hover:text-ink"
-            >
-              <ImagePlus size={13} />
-              Добавить обложку
-              {coverPickerOpen && (
-                <PageCoverPicker
-                  cover={cover}
-                  onChange={onCoverChange}
-                  uploadCoverImage={uploadCoverImage}
-                  onClose={() => setCoverPickerOpen(false)}
-                  anchorRef={coverButtonRef}
-                />
-              )}
-            </button>
-          )}
-          <div className="clear-both">
-            {(icon || !readOnly) && (
-              <div className="float-left mb-1 mr-4">
-                <PageIconPicker icon={icon} onChange={onIconChange} readOnly={readOnly} size={128} />
-              </div>
-            )}
-            <EditableTitle
-              title={title}
-              onTitleChange={onTitleChange}
-              readOnly={readOnly}
-              onEnter={() => focusBlock(blocks[0]?.id ?? '')}
-            />
-            <div className="clear-both" />
-          </div>
-        </>
       )}
+
+      {!cover && !readOnly && (
+        <div className="no-print mb-3 flex items-center gap-1">
+          {icon === '' && <PageIconPicker icon={icon} onChange={onIconChange} variant="add-button" />}
+          <button
+            type="button"
+            onClick={() => setCoverPickerOpen((v) => !v)}
+            ref={coverButtonRef}
+            className="relative flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink"
+          >
+            <ImagePlus size={14} />
+            Добавить обложку
+            {coverPickerOpen && (
+              <PageCoverPicker
+                cover={cover}
+                onChange={onCoverChange}
+                uploadCoverImage={uploadCoverImage}
+                onClose={() => setCoverPickerOpen(false)}
+                anchorRef={coverButtonRef}
+              />
+            )}
+          </button>
+        </div>
+      )}
+
+      <div
+        className={clsx(
+          'flex flex-col items-start gap-4 sm:flex-row sm:gap-6',
+          cover ? '-mt-12 sm:-mt-14 sm:items-end' : 'sm:items-center',
+        )}
+      >
+        {icon !== '' && (icon || !readOnly) && (
+          <div
+            className={clsx(
+              'relative shrink-0 rounded-2xl',
+              cover && 'bg-surface p-1.5 shadow-pop ring-1 ring-line/[0.06]',
+            )}
+          >
+            <PageIconPicker icon={icon} onChange={onIconChange} readOnly={readOnly} size={112} />
+          </div>
+        )}
+        <div className={clsx('w-full min-w-0 flex-1', cover && icon !== '' && 'sm:pb-1', cover && (icon === '' || (!icon && readOnly)) && 'pt-14 sm:pt-16')}>
+          <EditableTitle
+            title={title}
+            onTitleChange={onTitleChange}
+            readOnly={readOnly}
+            onEnter={() => focusBlock(blocks[0]?.id ?? '')}
+          />
+        </div>
+      </div>
 
       {isSourceView ? (
         <textarea
@@ -1266,15 +1459,16 @@ export function Editor({
           value={sourceText}
           onChange={(e) => setSourceText(e.target.value)}
           spellCheck={false}
-          className="mt-4 min-h-[60vh] w-full resize-y rounded-lg border border-line/10 bg-surface px-3 py-2 font-mono text-xs leading-6 text-ink outline-none focus:border-accent"
+          className="input mt-4 min-h-[60vh] resize-y py-3 font-mono text-xs leading-6"
         />
       ) : (
-        <div className={clsx('mt-4 space-y-1 rounded-lg transition-colors', dragOverAssets && 'bg-accent-soft/30 ring-2 ring-accent/30')}>
+        <div className={clsx('mt-6 flex flex-col gap-0.5 rounded-lg transition-colors', dragOverAssets && 'bg-accent-soft/30 ring-2 ring-accent/30')}>
           {blocks.map((block) => (
             <Fragment key={block.id}>
               <BlockRow
                 block={block}
                 readOnly={readOnly}
+                isHighlighted={block.id === highlightedBlockId}
               numberedListIndex={block.type === 'numberedList' ? numberedListIndices.get(block.id) : undefined}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
@@ -1282,6 +1476,7 @@ export function Editor({
               onPaste={handlePaste}
               onFocus={() => setFocusedBlockId(block.id)}
               onToggleTodo={() => updateBlock(block.id, { checked: !block.checked })}
+              onFormulaChange={(content) => updateBlock(block.id, { content })}
               onAddBelow={() => insertBlockAfter(block.id)}
               onRemove={() => removeBlock(block.id)}
               onDrop={(e) => handleBlockDrop(e, block.id)}
@@ -1321,8 +1516,20 @@ export function Editor({
           imagesOnly={filePickerState.kind === 'image'}
         />
       )}
-      {pageRefPickerBlockId && (
-        <PagePickerDialog currentUserId={currentUserId} onClose={() => setPageRefPickerBlockId(null)} onPick={insertPageRefLink} />
+      {pageRefFlow && !pageRefFlow.targetPage && (
+        <PagePickerDialog
+          currentUserId={currentUserId}
+          onClose={() => setPageRefFlow(null)}
+          onPick={(page) => setPageRefFlow((prev) => (prev ? { ...prev, targetPage: page } : prev))}
+        />
+      )}
+      {pageRefFlow?.targetPage && (
+        <PageBlockPickerDialog
+          page={pageRefFlow.targetPage}
+          onBack={() => setPageRefFlow((prev) => (prev ? { ...prev, targetPage: null } : prev))}
+          onClose={() => setPageRefFlow(null)}
+          onPick={(blockId) => insertPageRefLink(pageRefFlow.targetPage!, blockId)}
+        />
       )}
     </div>
   );
@@ -1382,7 +1589,7 @@ function BlockTypeDropdown({
       </button>
 
       {open && !disabled && (
-        <div className="animate-popIn absolute left-0 top-full z-20 mt-1 w-56 overflow-hidden rounded-lg border border-line/10 bg-surface-panel shadow-panel">
+        <div className="popover z-40 overflow-hidden p-0 max-md:fixed max-md:inset-x-2 max-md:bottom-[calc(var(--safe-bottom)+64px)] md:absolute md:left-0 md:top-full md:z-20 md:mt-1.5 md:w-56">
           <div className="max-h-72 overflow-y-auto p-1">
             {BLOCK_TYPE_OPTIONS.map((opt) => {
               const Icon = opt.icon;
@@ -1413,7 +1620,7 @@ function BlockTypeDropdown({
 }
 
 function ToolbarSeparator() {
-  return <div className="mx-0.5 h-5 w-px shrink-0 bg-line/10" />;
+  return <div className="mx-1 h-4 w-px shrink-0 bg-line/[0.1]" />;
 }
 
 /**
@@ -1487,10 +1694,10 @@ function EditableTitle({
               document.execCommand('insertText', false, e.clipboardData.getData('text/plain'));
             }
       }
-      data-placeholder={title === '' ? 'Untitled' : undefined}
+      data-placeholder={title === '' ? 'Без названия' : undefined}
       style={{ whiteSpace: 'pre-wrap' }}
       className={clsx(
-        'min-h-[1.2em] break-words text-4xl font-bold outline-none',
+        'min-h-[1.2em] break-words text-[36px] font-bold leading-[1.15] tracking-[-0.025em] outline-none sm:text-[40px]',
         onCover === 'white'
           ? 'text-white empty:before:text-white/60 empty:before:content-[attr(data-placeholder)]'
           : 'text-ink empty:before:text-ink-faint empty:before:content-[attr(data-placeholder)]',
@@ -1516,9 +1723,9 @@ function ToolbarButton({
       // contentEditable block before the click handler can act on it.
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      className="rounded-md p-1.5 text-ink-muted hover:bg-surface-hover hover:text-ink"
+      className="flex h-7 w-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-hover hover:text-ink"
     >
-      <Icon size={14} />
+      <Icon size={15} />
     </button>
   );
 }
@@ -1541,7 +1748,9 @@ function BlockRow({
   onGripDragEnd,
   dropIndicator,
   isSelected,
+  isHighlighted,
   onContentMouseDown,
+  onFormulaChange,
 }: {
   block: PageBlock;
   readOnly?: boolean;
@@ -1561,7 +1770,10 @@ function BlockRow({
   onGripDragEnd: () => void;
   dropIndicator: 'before' | 'after' | null;
   isSelected: boolean;
+  /** True for the couple seconds right after navigating here via a page-reference link that targeted this specific block — see the `scrollToBlockId` effect in the parent. */
+  isHighlighted?: boolean;
   onContentMouseDown: (e: React.MouseEvent) => void;
+  onFormulaChange: (content: string) => void;
 }) {
   const Tag = BLOCK_TAG[block.type] as keyof JSX.IntrinsicElements;
 
@@ -1572,26 +1784,24 @@ function BlockRow({
 
     if (block.type === 'image') {
       return (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={withAuthToken(block.content)} alt={block.fileName ?? ''} className="my-2 max-h-[480px] rounded-md border border-line/10 object-contain" />
+        <ImageBlockView url={withAuthToken(block.content)} name={block.fileName ?? ''} zoomable={!!readOnly} />
+      );
+    }
+
+    if (block.type === 'formula') {
+      return (
+        <FormulaBlockContent
+          blockId={block.id}
+          content={block.content}
+          readOnly={readOnly}
+          onChange={onFormulaChange}
+          onFocus={onFocus}
+        />
       );
     }
 
     if (block.type === 'file') {
-      return (
-        <a
-          href={withAuthToken(block.content)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="my-1 flex items-center gap-3 rounded-md border border-line/10 bg-surface-panel px-3 py-2 text-sm hover:bg-surface-hover"
-        >
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line/10 bg-surface">
-            <FileText size={14} className="text-ink-faint" />
-          </span>
-          <span className="min-w-0 flex-1 truncate text-ink">{block.fileName ?? 'Файл'}</span>
-          <Download size={14} className="shrink-0 text-ink-faint" />
-        </a>
-      );
+      return <FileBlockCard url={block.content} name={block.fileName ?? 'Файл'} />;
     }
 
     return (
@@ -1602,13 +1812,13 @@ function BlockRow({
             checked={!!block.checked}
             onChange={readOnly ? undefined : onToggleTodo}
             disabled={readOnly}
-            className="mt-2 h-4 w-4 shrink-0 accent-[rgb(var(--accent))]"
+            className="mt-[7px] h-[16px] w-[16px] shrink-0 cursor-pointer rounded accent-[rgb(var(--accent))]"
           />
         )}
         {block.type === 'numberedList' && (
-          <span className="mt-0.5 min-w-[1.5em] shrink-0 text-right text-[15px] leading-7 text-ink-muted">{numberedListIndex ?? 1}.</span>
+          <span className="min-w-[1.5em] shrink-0 text-right text-[16px] leading-[1.75] tabular-nums text-ink-muted">{numberedListIndex ?? 1}.</span>
         )}
-        {block.type === 'bulletList' && <span className="mt-0.5 shrink-0 text-[15px] leading-7 text-ink-muted">•</span>}
+        {block.type === 'bulletList' && <span className="flex h-[28px] w-[1.1em] shrink-0 items-center justify-center"><span className="h-[5px] w-[5px] rounded-full bg-ink/70" /></span>}
         <EditableBlockContent
           block={block}
           Tag={Tag}
@@ -1633,8 +1843,9 @@ function BlockRow({
     <div
       data-block-row-id={block.id}
       className={clsx(
-        'editor-block group relative flex items-start gap-1 rounded-md px-1',
-        isSelected ? 'bg-accent-soft/50' : 'hover:bg-surface-hover/60',
+        'editor-block group relative flex items-start gap-1 rounded-md transition-colors duration-500 first:mt-0 sm:gap-0',
+        BLOCK_SPACING[block.type],
+        isHighlighted ? 'bg-accent-soft ring-2 ring-accent' : isSelected ? 'bg-accent-soft/50' : '',
       )}
       onDrop={readOnly ? undefined : onDrop}
       onDragOver={readOnly ? undefined : onDragOverBlock}
@@ -1643,18 +1854,18 @@ function BlockRow({
       {dropIndicator === 'after' && <div className="pointer-events-none absolute -bottom-0.5 left-1 right-1 h-0.5 rounded bg-accent" />}
 
       {!readOnly && (
-        <div className="no-print mt-1 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-          <button type="button" onClick={onAddBelow} className="rounded p-0.5 text-ink-faint hover:bg-surface-hover hover:text-ink" title="Добавить блок ниже">
-            <Plus size={14} />
+        <div className="no-print mt-[3px] flex shrink-0 items-center gap-px opacity-0 transition-opacity group-hover:opacity-100 sm:absolute sm:right-full sm:top-0 sm:mr-1.5">
+          <button type="button" onClick={onAddBelow} className="flex h-6 w-6 items-center justify-center rounded text-ink-faint hover:bg-surface-hover hover:text-ink" title="Добавить блок ниже">
+            <Plus size={16} />
           </button>
           <span
             draggable
             onDragStart={onGripDragStart}
             onDragEnd={onGripDragEnd}
-            className="cursor-grab rounded p-0.5 text-ink-faint hover:bg-surface-hover hover:text-ink active:cursor-grabbing"
+            className="flex h-6 w-5 cursor-grab items-center justify-center rounded text-ink-faint hover:bg-surface-hover hover:text-ink active:cursor-grabbing"
             title="Перетащить, чтобы изменить порядок"
           >
-            <GripVertical size={14} />
+            <GripVertical size={15} />
           </span>
         </div>
       )}
@@ -1667,7 +1878,7 @@ function BlockRow({
         <button
           type="button"
           onClick={onRemove}
-          className="mt-1 shrink-0 rounded p-0.5 text-ink-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-red-500 group-hover:opacity-100"
+          className="no-print mt-[3px] flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-danger group-hover:opacity-100 sm:absolute sm:left-full sm:top-0 sm:ml-1.5"
           title="Удалить блок"
         >
           <Trash2 size={14} />
@@ -1702,6 +1913,44 @@ function BlockRow({
  * always true right after the user's own keystroke, since `handleInput`
  * derives the new state from `el.innerHTML` in the first place.
  */
+/** Картинка статьи; в режиме чтения клик открывает её на весь экран. */
+function ImageBlockView({ url, name, zoomable }: { url: string; name: string; zoomable: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={url}
+        alt={name}
+        onClick={zoomable ? () => setOpen(true) : undefined}
+        className={clsx('my-3 max-h-[520px] rounded-lg border border-line/[0.08] object-contain shadow-xs', zoomable && 'cursor-zoom-in')}
+      />
+      {open && <FilePreviewDialog file={{ url, name: name || 'Изображение', mimeType: 'image/*' }} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+/** Блок «Файл»: клик открывает просмотр в модальном окне, а не новую вкладку. */
+function FileBlockCard({ url, name }: { url: string; name: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="my-1.5 flex w-full items-center gap-3 rounded-lg border border-line/[0.08] bg-surface-raised px-3 py-2.5 text-left text-sm shadow-xs transition-colors hover:bg-surface-hover"
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent-ink">
+          <FileText size={16} />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-ink">{name}</span>
+        <Eye size={14} className="shrink-0 text-ink-faint" />
+      </button>
+      {open && <FilePreviewDialog file={{ url, name, mimeType: '' }} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
 function EditableBlockContent({
   block,
   Tag,
@@ -1730,6 +1979,7 @@ function EditableBlockContent({
     if (el && el.innerHTML !== block.content) {
       el.innerHTML = block.content;
     }
+    if (el) hydrateInlineFormulas(el);
     // `Tag` matters here, not just `block.content`: converting a block's
     // type (e.g. H1 → H2) changes the rendered tag, and a different tag
     // means React unmounts the old DOM node and mounts a fresh, empty
@@ -1779,4 +2029,30 @@ function placeholderFor(type: PageBlockType): string {
     default:
       return "Напишите '/' для команд...";
   }
+}
+
+/**
+ * Телефон: сколько пикселей снизу занимает экранная клавиатура (через
+ * visualViewport) — чтобы панель форматирования стояла прямо над ней, а не
+ * пряталась под клавиатурой. На компьютере и без клавиатуры — 0.
+ */
+function useKeyboardInset(): number {
+  const [inset, setInset] = useState(0);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      if (window.innerWidth >= 768) return setInset(0);
+      const covered = window.innerHeight - vv.height - vv.offsetTop;
+      setInset(covered > 80 ? Math.round(covered) : 0);
+    };
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  }, []);
+  return inset;
 }

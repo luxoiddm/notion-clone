@@ -35,6 +35,11 @@ function blockToMarkdown(block: PageBlock): string {
       return `\`\`\`${block.language ?? ''}\n${block.content}\n\`\`\``;
     case 'divider':
       return '---';
+    case 'formula':
+      // content is raw LaTeX, not inline-formatted HTML like every other
+      // case here — never goes through htmlToMarkdown. $$...$$ is the
+      // common Markdown convention for a display-mode math block.
+      return `$$\n${block.content}\n$$`;
     case 'image':
       return `![${block.fileName ?? ''}](${resolveAssetUrl(block.content)})`;
     case 'file':
@@ -73,6 +78,13 @@ export function documentToPlainText(title: string, blocks: PageBlock[]): string 
     }
     if (block.type === 'image' || block.type === 'file') {
       lines.push(`[${block.fileName ?? 'файл'}] ${resolveAssetUrl(block.content)}`, '');
+      continue;
+    }
+    if (block.type === 'formula') {
+      // Already plain text (raw LaTeX), unlike every other type here —
+      // skip the innerHTML→textContent extraction below, which would
+      // misinterpret literal '<'/'>'/'&' in the formula as markup.
+      if (block.content.trim()) lines.push(block.content, '');
       continue;
     }
 

@@ -21,7 +21,7 @@ function scrollToBlock(blockId: string) {
 }
 
 /** Same size/hover styling as PageIconPicker's own trigger button — "стилистика ярлыка" per the request, these sit right next to it and should read as one visual group, not a separately-styled toolbar bolted on. */
-const ICON_BUTTON_CLASS = 'flex h-14 w-14 items-center justify-center rounded-lg text-ink-muted hover:bg-surface-hover hover:text-ink';
+const ICON_BUTTON_CLASS = 'flex h-9 flex-1 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-hover hover:text-ink';
 
 function DownloadMenu({ title, blocks, onPrint }: { title: string; blocks: PageBlock[]; onPrint: () => void }) {
   const [open, setOpen] = useState(false);
@@ -39,20 +39,20 @@ function DownloadMenu({ title, blocks, onPrint }: { title: string; blocks: PageB
   }, [open]);
 
   return (
-    <div ref={ref} className="relative inline-block">
+    <div ref={ref} className="relative flex flex-1">
       <button type="button" onClick={() => setOpen((v) => !v)} title="Скачать документ" className={ICON_BUTTON_CLASS}>
-        <Download size={20} />
+        <Download size={16} />
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 w-48 rounded-lg border border-line/10 bg-surface-panel p-1 shadow-panel">
+        <div className="popover absolute left-0 top-full z-20 mt-1.5 w-52">
           <button
             type="button"
             onClick={() => {
               downloadTextFile(`${sanitizeFilename(title)}.md`, documentToMarkdown(title, blocks), 'text/markdown');
               setOpen(false);
             }}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink-muted hover:bg-surface-hover hover:text-ink"
+            className="menu-item"
           >
             <FileText size={13} />
             Markdown (.md)
@@ -63,7 +63,7 @@ function DownloadMenu({ title, blocks, onPrint }: { title: string; blocks: PageB
               downloadTextFile(`${sanitizeFilename(title)}.txt`, documentToPlainText(title, blocks), 'text/plain');
               setOpen(false);
             }}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink-muted hover:bg-surface-hover hover:text-ink"
+            className="menu-item"
           >
             <FileType size={13} />
             Текст (.txt)
@@ -75,7 +75,7 @@ function DownloadMenu({ title, blocks, onPrint }: { title: string; blocks: PageB
               setOpen(false);
             }}
             title="Откроется диалог печати браузера — выберите «Сохранить как PDF» в списке принтеров"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink-muted hover:bg-surface-hover hover:text-ink"
+            className="menu-item"
           >
             <Download size={13} />
             PDF (через печать)
@@ -150,26 +150,30 @@ export function DocumentSidebar({
           this is open — a full-viewport backdrop would otherwise catch
           clicks meant for the header first. On md and up the panel is
           static/in-flow, nothing to dim behind regardless. */}
-      <div className="fixed inset-x-0 bottom-0 top-12 z-30 bg-black/30 md:hidden" onClick={onClose} />
+      <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] animate-overlayIn md:hidden" onClick={onClose} />
 
-      <aside className="fixed bottom-0 right-0 top-12 z-40 flex w-64 shrink-0 flex-col gap-6 overflow-y-auto border-l border-line/10 bg-surface-panel p-4 md:static md:inset-auto md:z-auto">
+      <aside className="fixed inset-y-0 right-0 z-50 flex w-[272px] shrink-0 animate-fadeIn flex-col gap-7 overflow-y-auto border-l border-line/[0.07] bg-surface-panel px-4 py-5 shadow-dialog md:static md:inset-auto md:z-auto md:shadow-none">
         <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">Ярлык и действия</h3>
+          <h3 className="section-label mb-2.5">Документ</h3>
           <div className="flex items-center gap-2">
-            <PageIconPicker icon={icon} onChange={onIconChange} readOnly={readOnly} />
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-line/[0.08] bg-surface-raised shadow-xs">
+              <PageIconPicker icon={icon} onChange={onIconChange} readOnly={readOnly} size={40} />
+            </div>
+            <div className="flex flex-1 items-center gap-0.5 rounded-lg border border-line/[0.08] bg-surface-raised p-0.5 shadow-xs">
             <DownloadMenu title={title} blocks={blocks} onPrint={handlePrint} />
             <button type="button" onClick={handlePrint} title="Печать" className={ICON_BUTTON_CLASS}>
-              <Printer size={20} />
+              <Printer size={16} />
             </button>
             <button type="button" onClick={() => setHistoryOpen(true)} title="История версий" className={ICON_BUTTON_CLASS}>
-              <HistoryIcon size={20} />
+              <HistoryIcon size={16} />
             </button>
+            </div>
           </div>
         </section>
 
         {headings.length > 0 && (
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">Разделы</h3>
+            <h3 className="section-label mb-2">Разделы</h3>
             <nav className="space-y-0.5">
               {headings.map((h) => (
                 <button
@@ -177,8 +181,8 @@ export function DocumentSidebar({
                   type="button"
                   onClick={() => scrollToBlock(h.blockId)}
                   title={h.text}
-                  style={{ paddingLeft: `${(h.level - 1) * 12}px` }}
-                  className="block w-full truncate rounded px-1.5 py-1 text-left text-xs text-ink-muted hover:bg-surface-hover hover:text-ink"
+                  style={{ paddingLeft: `${8 + (h.level - 1) * 12}px` }}
+                  className="block w-full truncate rounded-md border-l-2 border-transparent py-1 pr-2 text-left text-[13px] text-ink-muted transition-colors hover:border-accent hover:bg-surface-hover hover:text-ink"
                 >
                   {h.text}
                 </button>
@@ -189,7 +193,7 @@ export function DocumentSidebar({
 
         {relatedPages.length > 0 && (
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">
+            <h3 className="section-label mb-2">
               Связанные документы
             </h3>
             <div className="space-y-1.5">
@@ -202,7 +206,7 @@ export function DocumentSidebar({
 
         {(!readOnly || tags.length > 0) && (
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">Теги</h3>
+            <h3 className="section-label mb-2">Теги</h3>
             <TagEditor tags={tags} onChange={onTagsChange} readOnly={readOnly} />
           </section>
         )}

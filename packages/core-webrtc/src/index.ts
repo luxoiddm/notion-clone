@@ -9,6 +9,8 @@ export interface CallRoom {
   chatId: string;
   participantIds: string[];
   createdAt: string;
+  /** Кто отклонил входящий звонок (кнопкой в баннере). */
+  declinedIds?: string[];
 }
 
 const MAX_PARTICIPANTS = 8;
@@ -60,8 +62,12 @@ export interface CallSignalingOptions {
  */
 export class CallSignaling {
   private rooms = new Map<string, CallRoom>();
+  private io: Server | null = null;
+  private getChatMembers: CallSignalingOptions['getChatMembers'] | null = null;
 
   attach(io: Server, { isChatMember, getChatMembers }: CallSignalingOptions) {
+    this.io = io;
+    this.getChatMembers = getChatMembers;
     io.on('connection', (socket: Socket) => {
       const socketUser = (socket.data as { user?: { id: string; displayName: string } }).user;
       const userId = socketUser?.id;
@@ -116,6 +122,21 @@ export class CallSignaling {
         emitToUserInRoom(io, payload.roomId, payload.toUserId, 'call:signal', { fromUserId: userId, data: payload.data });
       });
 
+      // Отклонение входящего: если отклонили все, кого звали, а в звонке
+      // по-прежнему только звонящий, — ему 'call:declined' с allDeclined
+      // (гудки «занято», звонок завершается). Иначе — просто кто отклонил.
+      socket.on('call:decline', async ({ roomId }: { roomId: string }) => {
+        const room = this.rooms.get(roomId);
+        if (!room || !userId || room.participantIds.includes(userId)) return;
+        const allowed = await isChatMember(room.chatId, userId).catch(() => false);
+        if (!allowed) return;
+        room.declinedIds = [...new Set([...(room.declinedIds ?? []), userId])];
+        const memberIds = await getChatMembers(room.chatId).catch(() => [] as string[]);
+        const invited = memberIds.filter((id) => !room.participantIds.includes(id));
+        const allDeclined = room.participantIds.length <= 1 && invited.length > 0 && invited.every((id) => room.declinedIds!.includes(id));
+        io.to(roomId).emit('call:declined', { roomId, userId, displayName: socketUser?.displayName ?? '', allDeclined });
+      });
+
       socket.on('call:leave', ({ roomId }: { roomId: string }) => {
         this.removeFromRoom(socket, roomId, userId);
       });
@@ -135,10 +156,28 @@ export class CallSignaling {
     const room = this.rooms.get(roomId);
     if (room && userId) {
       room.participantIds = room.participantIds.filter((id) => id !== userId);
-      if (room.participantIds.length === 0) this.rooms.delete(roomId);
+      if (room.participantIds.length === 0) {
+        this.rooms.delete(roomId);
+        this.notifyEnded(room);
+      }
     }
     socket.leave(roomId);
     socket.to(roomId).emit('call:peer-left', { userId });
+  }
+
+  /**
+   * Звонок закончился (в комнате никого не осталось) — сообщаем всем
+   * участникам чата: у тех, кому ещё звонит (звонящий положил трубку до
+   * ответа), должен замолчать рингтон и пропасть баннер.
+   */
+  private notifyEnded(room: CallRoom) {
+    const io = this.io;
+    if (!io || !this.getChatMembers) return;
+    void this.getChatMembers(room.chatId)
+      .then((memberIds) => {
+        for (const memberId of memberIds) io.to(personalRoomKey(memberId)).emit('call:ended', { chatId: room.chatId, roomId: room.id });
+      })
+      .catch(() => undefined);
   }
 }
 

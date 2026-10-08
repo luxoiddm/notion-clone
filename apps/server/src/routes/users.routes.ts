@@ -29,7 +29,11 @@ export function usersRoutes(auth: AuthService, engine: FsEngine) {
     '/',
     asyncRoute(async (_req, res) => {
       const users = await engine.listUsers();
-      res.json(users.map((u) => ({ id: u.id, displayName: u.displayName, avatarUrl: u.avatarUrl, accentColor: u.accentColor })));
+      // Уволенные остаются в справочнике (их имена видны в старых чатах и
+      // документах) с пометкой dismissed — в выборе коллег их не показывают.
+      res.json(
+        users.map((u) => ({ id: u.id, displayName: u.displayName, avatarUrl: u.avatarUrl, accentColor: u.accentColor, dismissed: !!u.dismissedAt })),
+      );
     }),
   );
 

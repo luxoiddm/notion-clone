@@ -82,7 +82,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       },
       12 * 60 * 1000,
     );
-    return () => clearInterval(interval);
+    // Вернулись во вкладку после долгого перерыва (таймер в фоне мог не
+    // сработать) — обновляем сразу: от токена зависит и cookie, которой
+    // браузер авторизует картинки и файлы.
+    let hiddenAt = 0;
+    const onVisibility = () => {
+      if (document.hidden) hiddenAt = Date.now();
+      else if (hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) void refreshAccessToken();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [user]);
 
   const login = useCallback((u: CurrentUser, token: string) => {

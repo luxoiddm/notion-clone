@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, History as HistoryIcon, Loader2, ChevronLeft } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '../lib/api';
 import type { HistorySnapshot, PageBlock, PageContent } from '../lib/types';
-import { BLOCK_TAG, BLOCK_CLASS } from '../lib/blockStyles';
+import { BLOCK_TAG, BLOCK_CLASS, BLOCK_SPACING } from '../lib/blockStyles';
+import { FormulaPreview, hydrateInlineFormulas } from './FormulaBlock';
 
 /**
  * Snapshot timestamps are stored as `2026-08-13T10-30-00-000Z` — colons
@@ -59,15 +60,43 @@ export function BlockListPreview({ blocks }: { blocks: PageBlock[] }) {
 }
 
 function BlockPreview({ block, numberedListIndex }: { block: PageBlock; numberedListIndex?: number }) {
+  // Declared unconditionally, before any of the early returns below —
+  // React's hook rules require the same hooks to run on every render of
+  // this component regardless of which block type branch it takes.
+  const ref = useRef<HTMLElement | null>(null);
+  // Read-only counterpart to EditableBlockContent's own hydration call in
+  // Editor.tsx — same reasoning: block.content stores the literal
+  // "$...$" fallback text, never the rendered formula, so every viewer
+  // (this preview, the live editor) hydrates it independently on mount.
+  // A no-op for the early-return branches below (divider/image/file/
+  // formula never attach `ref`, so `ref.current` just stays null there).
+  useEffect(() => {
+    if (ref.current) hydrateInlineFormulas(ref.current);
+  }, [block.content]);
+
   if (block.type === 'divider') return <hr className="my-3 border-line/10" />;
   if (block.type === 'image') return <p className="mb-2 text-xs text-ink-faint">[Изображение{block.fileName ? `: ${block.fileName}` : ''}]</p>;
   if (block.type === 'file') return <p className="mb-2 text-xs text-ink-faint">[Файл{block.fileName ? `: ${block.fileName}` : ''}]</p>;
+  // Falls outside the generic dangerouslySetInnerHTML path below on
+  // purpose — block.content here is a raw LaTeX string, not HTML like
+  // every other block type, so it needs KaTeX's own renderer rather than
+  // being dropped straight into innerHTML.
+  if (block.type === 'formula') {
+    return block.content.trim() ? (
+      <div className="mb-1">
+        <FormulaPreview latex={block.content} />
+      </div>
+    ) : null;
+  }
 
   const Tag = BLOCK_TAG[block.type] as keyof JSX.IntrinsicElements;
+  const DynamicTag = Tag as any;
   const content = (
-    <Tag
+    <DynamicTag
+      ref={ref}
       className={clsx(
         BLOCK_CLASS[block.type],
+        BLOCK_SPACING[block.type],
         (block.type === 'bulletList' || block.type === 'numberedList') && 'list-none',
         block.type === 'todo' && block.checked && 'text-ink-faint line-through',
       )}
@@ -156,9 +185,9 @@ export function PageHistoryDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
+    <div className="dialog-overlay" onClick={onClose}>
       <div
-        className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl border border-line/10 bg-surface-panel shadow-panel"
+        className="dialog flex max-h-[80vh] w-full max-w-2xl flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-line/10 p-4">
@@ -171,7 +200,7 @@ export function PageHistoryDialog({
                   setPreviewContent(null);
                 }}
                 title="Назад к списку"
-                className="rounded p-1 text-ink-muted hover:bg-surface-hover hover:text-ink"
+                className="btn-icon h-7 w-7"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -179,12 +208,12 @@ export function PageHistoryDialog({
             <HistoryIcon size={15} />
             {selected ? formatSnapshotTime(selected.timestamp) : 'История версий'}
           </h2>
-          <button type="button" onClick={onClose} className="rounded p-1 text-ink-muted hover:bg-surface-hover hover:text-ink">
+          <button type="button" onClick={onClose} className="btn-icon h-7 w-7">
             <X size={16} />
           </button>
         </div>
 
-        {error && <p className="px-4 pt-3 text-sm text-red-500">{error}</p>}
+        {error && <p className="px-4 pt-3 text-sm text-danger">{error}</p>}
 
         <div className="flex-1 overflow-y-auto p-4">
           {!selected ? (
@@ -232,7 +261,7 @@ export function PageHistoryDialog({
               type="button"
               onClick={() => void handleRestore()}
               disabled={isRestoring || previewContent === null}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-accent py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
+              className="btn-primary w-full"
             >
               {isRestoring && <Loader2 size={14} className="animate-spin" />}
               Восстановить эту версию

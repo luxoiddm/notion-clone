@@ -3,11 +3,12 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Check, X, Trash2, ChevronUp, ChevronDown, Loader2, RefreshCw, Eye } from 'lucide-react';
+import { ArrowLeft, Check, X, Trash2, ChevronUp, ChevronDown, Loader2, RefreshCw, Eye, Globe } from 'lucide-react';
 import { moderationApi, type PublicSite, type EnrichedPublicNode } from '../../../lib/api';
 import { useToast, ToastProvider } from '../../../components/Toast';
 import { BlockListPreview } from '../../../components/PageHistoryDialog';
 import type { PageBlock } from '../../../lib/types';
+import { AppShell, FullScreenLoader } from '../../../components/AppShell';
 
 export default function ModerationSiteDetailPage() {
   return (
@@ -120,51 +121,48 @@ function ModerationSiteDetail() {
   };
 
   if (!site || !nodes) {
-    return (
-      <div className="flex h-screen items-center justify-center text-ink-muted">
-        <Loader2 size={18} className="animate-spin" />
-      </div>
-    );
+    return <FullScreenLoader />;
   }
 
   const pending = nodes.filter((n) => n.status === 'pending').sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
   const approved = nodes.filter((n) => n.status === 'approved');
 
   return (
-    <div className="mx-auto min-h-screen max-w-3xl px-6 py-10 sm:px-10">
-      <Link href="/moderation" className="mb-6 inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink">
-        <ArrowLeft size={14} />
-        Назад к модерации
-      </Link>
-
-      <div className="mb-1 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-ink">{site.title}</h1>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          title="Обновить"
-          className="flex items-center gap-1.5 rounded-md border border-line/10 px-2.5 py-1 text-xs text-ink-muted hover:bg-surface-hover hover:text-ink"
-        >
-          <RefreshCw size={13} />
+    <AppShell
+      mobileBack={{ href: '/moderation', label: 'Публикация' }}
+      width="default"
+      title={site.title}
+      icon={<Globe size={19} />}
+      description={
+        <span className="flex flex-wrap items-center gap-2">
+          <Link href="/moderation" className="inline-flex items-center gap-1 hover:text-ink">
+            <ArrowLeft size={13} /> Публикация
+          </Link>
+          <span className="text-ink-faint">·</span>
+          <a href={`/${site.slug}`} target="_blank" rel="noopener noreferrer" className="font-mono text-xs hover:text-ink hover:underline">
+            /{site.slug}
+          </a>
+          <span className={site.enabled ? 'badge-accent' : 'badge'}>{site.enabled ? 'включена' : 'выключена'}</span>
+        </span>
+      }
+      actions={
+        <button type="button" onClick={() => void refresh()} title="Обновить" className="btn-secondary">
+          <RefreshCw size={14} />
           Обновить
         </button>
-      </div>
-      <p className="mb-8 text-sm text-ink-muted">
-        <a href={`/${site.slug}`} target="_blank" rel="noopener noreferrer" className="hover:underline">
-          /{site.slug}
-        </a>
-        {' · '}
-        {site.enabled ? 'включена' : 'выключена'}
-      </p>
-
+      }
+    >
       <section className="mb-10">
-        <h2 className="mb-3 text-lg font-semibold text-ink">Очередь модерации {pending.length > 0 && `(${pending.length})`}</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
+          Очередь модерации
+          {pending.length > 0 && <span className="badge-accent">{pending.length}</span>}
+        </h2>
         {pending.length === 0 ? (
-          <p className="text-sm text-ink-faint">Заявок на рассмотрении нет.</p>
+          <p className="rounded-xl border border-dashed border-line/[0.12] px-6 py-8 text-center text-sm text-ink-muted">Заявок на рассмотрении нет.</p>
         ) : (
           <div className="space-y-2">
             {pending.map((node) => (
-              <div key={node.id} className="rounded-lg border border-line/10 bg-surface-panel p-3">
+              <div key={node.id} className="card p-3.5">
                 <div className="flex items-start justify-between gap-3">
                   <button
                     type="button"
@@ -173,7 +171,7 @@ function ModerationSiteDetail() {
                     className="min-w-0 flex-1 text-left disabled:cursor-default"
                   >
                     <p className="flex items-center gap-1.5 truncate font-medium text-ink hover:underline">
-                      {node.pageMissing ? <span className="text-ink-faint">(страница удалена)</span> : node.pageTitle || 'Untitled'}
+                      {node.pageMissing ? <span className="text-ink-faint">(страница удалена)</span> : node.pageTitle || 'Без названия'}
                       {!node.pageMissing && <Eye size={13} className="shrink-0 text-ink-faint" />}
                     </p>
                     <p className="text-xs text-ink-faint">отправлено {new Date(node.submittedAt).toLocaleString('ru-RU')}</p>
@@ -184,17 +182,17 @@ function ModerationSiteDetail() {
                       onClick={() => void approve(node.id)}
                       disabled={node.pageMissing}
                       title="Одобрить"
-                      className="rounded p-1.5 text-ink-muted hover:bg-green-500/15 hover:text-green-600 disabled:opacity-40"
+                      className="btn-secondary btn-sm text-success disabled:opacity-40"
                     >
-                      <Check size={16} />
+                      <Check size={14} /> Одобрить
                     </button>
                     <button
                       type="button"
                       onClick={() => setRejectingId(rejectingId === node.id ? null : node.id)}
                       title="Отклонить"
-                      className="rounded p-1.5 text-ink-muted hover:bg-red-500/15 hover:text-red-500"
+                      className="btn-ghost btn-sm hover:text-danger"
                     >
-                      <X size={16} />
+                      <X size={14} /> Отклонить
                     </button>
                   </div>
                 </div>
@@ -205,12 +203,12 @@ function ModerationSiteDetail() {
                       value={rejectionReason}
                       onChange={(e) => setRejectionReason(e.target.value)}
                       placeholder="Причина отклонения (необязательно)"
-                      className="flex-1 rounded-md border border-line/10 bg-surface px-2 py-1 text-xs focus:border-accent focus:outline-none"
+                      className="input h-8 flex-1 text-xs"
                     />
                     <button
                       type="button"
                       onClick={() => void reject(node.id)}
-                      className="shrink-0 rounded-md bg-red-500 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90"
+                      className="btn-danger btn-sm h-8"
                     >
                       Отклонить
                     </button>
@@ -223,39 +221,39 @@ function ModerationSiteDetail() {
       </section>
 
       <section>
-        <h2 className="mb-1 text-lg font-semibold text-ink">Дерево страницы</h2>
+        <h2 className="mb-1 text-sm font-semibold text-ink">Дерево страницы</h2>
         <p className="mb-3 text-sm text-ink-muted">
           Структура здесь независима от того, как документ организован у автора в его личном пространстве — можно
           выстроить любую вложенность заново.
         </p>
         {approved.length === 0 ? (
-          <p className="text-sm text-ink-faint">Ни одной одобренной страницы пока нет.</p>
+          <p className="rounded-xl border border-dashed border-line/[0.12] px-6 py-8 text-center text-sm text-ink-muted">Ни одной одобренной страницы пока нет.</p>
         ) : (
           <PublicTree nodes={approved} onReparent={reparent} onReorder={reorder} onRemove={removeNode} onPreview={openPreview} />
         )}
       </section>
 
       {previewNode && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setPreviewNode(null)}>
+        <div className="dialog-overlay" onClick={() => setPreviewNode(null)}>
           <div
-            className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-line/10 bg-surface-panel shadow-panel"
+            className="dialog flex max-h-[85vh] w-full max-w-2xl flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex shrink-0 items-center justify-between border-b border-line/10 px-5 py-3">
+            <div className="flex shrink-0 items-center justify-between border-b border-line/[0.07] px-5 py-3">
               <h2 className="truncate text-sm font-semibold text-ink">
-                {previewNode.pageTitle || 'Untitled'}
+                {previewNode.pageTitle || 'Без названия'}
               </h2>
               <button
                 type="button"
                 onClick={() => setPreviewNode(null)}
-                className="shrink-0 rounded p-1 text-ink-muted hover:bg-surface-hover hover:text-ink"
+                className="btn-icon h-7 w-7"
               >
                 <X size={16} />
               </button>
             </div>
             <div className="min-h-[200px] flex-1 overflow-y-auto px-5 py-4">
               {previewError ? (
-                <p className="text-sm text-red-500">{previewError}</p>
+                <p className="text-sm text-danger">{previewError}</p>
               ) : !previewContent ? (
                 <div className="flex items-center gap-2 text-sm text-ink-muted">
                   <Loader2 size={16} className="animate-spin" />
@@ -268,7 +266,7 @@ function ModerationSiteDetail() {
           </div>
         </div>
       )}
-    </div>
+    </AppShell>
   );
 }
 
@@ -290,47 +288,47 @@ function PublicTree({
     const siblings = nodes.filter((n) => n.parentId === parentId).sort((a, b) => a.order - b.order);
     return siblings.map((node) => (
       <div key={node.id}>
-        <div className="flex items-center gap-2 border-b border-line/10 py-1.5" style={{ paddingLeft: depth * 20 }}>
+        <div className="flex items-center gap-2 border-b border-line/[0.06] py-2 pr-2 transition-colors hover:bg-surface-hover/60" style={{ paddingLeft: 12 + depth * 20 }}>
           <button
             type="button"
             onClick={() => onPreview(node)}
             disabled={node.pageMissing}
             className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-sm text-ink hover:underline disabled:cursor-default disabled:no-underline"
           >
-            {node.pageMissing ? <span className="text-ink-faint">(страница удалена)</span> : node.pageTitle || 'Untitled'}
+            {node.pageMissing ? <span className="text-ink-faint">(страница удалена)</span> : node.pageTitle || 'Без названия'}
             {!node.pageMissing && <Eye size={12} className="shrink-0 text-ink-faint" />}
           </button>
 
           <select
             value={node.parentId ?? ''}
             onChange={(e) => onReparent(node, e.target.value || null)}
-            className="rounded-md border border-line/10 bg-surface px-1.5 py-1 text-xs text-ink-muted focus:border-accent focus:outline-none"
+            className="input h-7 w-auto max-w-[180px] px-2 text-xs"
           >
             <option value="">— (корень)</option>
             {nodes
               .filter((n) => n.id !== node.id)
               .map((n) => (
                 <option key={n.id} value={n.id}>
-                  {n.pageTitle || 'Untitled'}
+                  {n.pageTitle || 'Без названия'}
                 </option>
               ))}
           </select>
 
-          <button type="button" onClick={() => onReorder(node, siblings, 'up')} className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-ink">
+          <button type="button" onClick={() => onReorder(node, siblings, 'up')} className="btn-icon h-7 w-7">
             <ChevronUp size={13} />
           </button>
           <button
             type="button"
             onClick={() => onReorder(node, siblings, 'down')}
-            className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-ink"
+            className="btn-icon h-7 w-7"
           >
             <ChevronDown size={13} />
           </button>
           <button
             type="button"
-            onClick={() => onRemove(node.id, node.pageTitle || 'Untitled')}
+            onClick={() => onRemove(node.id, node.pageTitle || 'Без названия')}
             title="Убрать из публичной страницы"
-            className="rounded p-1 text-ink-faint hover:bg-surface-hover hover:text-red-500"
+            className="btn-icon h-7 w-7 hover:text-danger"
           >
             <Trash2 size={13} />
           </button>
@@ -340,5 +338,5 @@ function PublicTree({
     ));
   };
 
-  return <div className="rounded-lg border border-line/10">{renderLevel(null, 0)}</div>;
+  return <div className="card overflow-hidden [&>div:last-child>div]:border-b-0">{renderLevel(null, 0)}</div>;
 }

@@ -35,7 +35,7 @@ export function MobilePrivateCallScreen({
     // rendering underneath but stays invisible on a narrow viewport
     // purely through this one class, no separate conditional needed at
     // the call site beyond "is this a private call".
-    <div className="fixed inset-0 z-40 flex flex-col bg-black md:hidden">
+    <div data-no-swipe-back className="fixed inset-0 z-40 flex flex-col bg-black md:hidden">
       <div className="relative flex-1">
         <VideoTile stream={remoteStream} label={remoteLabel} fill />
 

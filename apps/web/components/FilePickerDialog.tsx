@@ -50,14 +50,14 @@ export function FilePickerDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
+    <div className="dialog-overlay" onClick={onClose}>
       <div
-        className="animate-popIn flex max-h-[80vh] w-full max-w-lg flex-col rounded-xl border border-line/10 bg-surface-panel p-5 shadow-panel"
+        className="dialog flex max-h-[80vh] w-full max-w-lg flex-col p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink">Вставить файл или изображение</h2>
-          <button type="button" onClick={onClose} className="rounded p-1 text-ink-muted hover:bg-surface-hover hover:text-ink">
+          <button type="button" onClick={onClose} className="btn-icon h-7 w-7">
             <X size={16} />
           </button>
         </div>
@@ -82,7 +82,7 @@ export function FilePickerDialog({
           Загрузить новый файл
         </button>
 
-        {error && <p className="mb-3 text-sm text-red-500">{error}</p>}
+        {error && <p className="mb-3 text-sm text-danger">{error}</p>}
 
         <div className="flex-1 space-y-1 overflow-y-auto">
           {files === null ? (

@@ -47,3 +47,26 @@ export function sanitizeFileName(fileName: string): string {
   }
   return cleaned;
 }
+
+/**
+ * Человекочитаемое имя файла для показа и скачивания (Content-Disposition):
+ * сохраняет кириллицу и любые буквы Unicode, но убирает путь, управляющие
+ * символы и символы, запрещённые в именах файлов Windows. На диск под этим
+ * именем ничего не пишется — имя на диске всегда ASCII (см. sanitizeFileName).
+ */
+export function sanitizeDisplayFileName(fileName: string): string {
+  const base = fileName.replace(/\\/g, '/').split('/').pop() ?? '';
+  const cleaned = base
+    .normalize('NFC')
+    .replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200);
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'file';
+}
+
+/** Расширение файла в безопасном ASCII-виде (`.pdf`), или пустая строка. */
+export function safeExtension(fileName: string): string {
+  const m = /\.([a-zA-Z0-9]{1,10})$/.exec(fileName.trim());
+  return m ? `.${m[1]!.toLowerCase()}` : '';
+}

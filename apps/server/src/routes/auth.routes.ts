@@ -1,8 +1,20 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { AuthService, requireAuth } from '@core/auth';
+import { AuthService, requireAuth, MEDIA_COOKIE } from '@core/auth';
+import type { Response } from 'express';
 import { FsEngine } from '@core/fs-engine';
 import { asyncRoute } from '../middleware/errorHandler.js';
+
+/**
+ * Копия access-токена в httpOnly-cookie — ей авторизуются картинки, файлы
+ * и предпросмотр (`<img src>`, `<iframe>`), без `?token=` в адресе.
+ * Живёт столько же, сколько сам токен (15 мин); обновляется вместе с ним
+ * в /refresh. SameSite=Lax — чтобы ссылка на файл, открытая из почты
+ * или мессенджера, работала у вошедшего сотрудника.
+ */
+function setMediaCookie(res: Response, accessToken: string) {
+  res.cookie(MEDIA_COOKIE, accessToken, { httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: 15 * 60 * 1000 });
+}
 
 export function authRoutes(auth: AuthService, fs: FsEngine) {
   const router = Router();
@@ -49,6 +61,7 @@ export function authRoutes(auth: AuthService, fs: FsEngine) {
       const accessToken = auth.signAccessToken(payload);
       const refreshToken = auth.signRefreshToken(payload);
 
+      setMediaCookie(res, accessToken);
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
         secure: true,
@@ -77,15 +90,18 @@ export function authRoutes(auth: AuthService, fs: FsEngine) {
       const profile = await fs.getUser(payload.sub);
       if (!profile.enabled) {
         res.clearCookie('refreshToken');
+        res.clearCookie(MEDIA_COOKIE, { path: '/' });
         return res.status(403).json({ error: 'This account has been disabled' });
       }
       const accessToken = auth.signAccessToken({ sub: payload.sub, role: profile.role, displayName: profile.displayName });
+      setMediaCookie(res, accessToken);
       res.json({ accessToken });
     }),
   );
 
   router.post('/logout', (_req, res) => {
     res.clearCookie('refreshToken');
+    res.clearCookie(MEDIA_COOKIE, { path: '/' });
     res.status(204).end();
   });
 
@@ -118,7 +134,9 @@ export function authRoutes(auth: AuthService, fs: FsEngine) {
       await fs.setCredential(email, userId, passwordHash);
 
       const payload = { sub: userId, role, displayName };
-      res.json({ accessToken: auth.signAccessToken(payload), user: { id: userId, role, displayName, avatarUrl: null, accentColor: null } });
+      const accessToken = auth.signAccessToken(payload);
+      setMediaCookie(res, accessToken);
+      res.json({ accessToken, user: { id: userId, role, displayName, avatarUrl: null, accentColor: null } });
     }),
   );
 
@@ -147,9 +165,11 @@ export function authRoutes(auth: AuthService, fs: FsEngine) {
       await fs.setCredential(email, userId, passwordHash);
 
       const payload = { sub: userId, role: profile.role, displayName: profile.displayName };
+      const accessToken = auth.signAccessToken(payload);
+      setMediaCookie(res, accessToken);
       res
         .status(201)
-        .json({ accessToken: auth.signAccessToken(payload), user: { id: userId, role: profile.role, displayName, avatarUrl: profile.avatarUrl, accentColor: profile.accentColor } });
+        .json({ accessToken, user: { id: userId, role: profile.role, displayName, avatarUrl: profile.avatarUrl, accentColor: profile.accentColor } });
     }),
   );
 

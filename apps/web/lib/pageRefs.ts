@@ -5,10 +5,15 @@ export interface PageRefLocation {
 }
 
 // Matches exactly what Editor.tsx's insertPageRefLink() writes:
-// href="/page-ref/{ownerId}/{projectId}/{pageId}". IDs are UUIDs (hex and
-// dashes only), so there's no HTML-entity-encoding concern to worry about
-// in the raw stored HTML this runs against.
-const PAGE_REF_PATTERN = /href="\/page-ref\/([^/"]+)\/([^/"]+)\/([^/"]+)"/g;
+// href="/page-ref/{ownerId}/{projectId}/{pageId}", optionally followed
+// by a trailing /{blockId} when the link targets a specific block
+// within that page rather than the page as a whole — the non-capturing
+// group at the end accounts for that segment without capturing it,
+// since this scan only cares which *pages* are referenced, not which
+// block within each one. IDs are UUIDs (hex and dashes only), so
+// there's no HTML-entity-encoding concern to worry about in the raw
+// stored HTML this runs against.
+const PAGE_REF_PATTERN = /href="\/page-ref\/([^/"]+)\/([^/"]+)\/([^/"]+)(?:\/[^/"]+)?"/g;
 
 /**
  * Extracts every unique document referenced anywhere in the page's

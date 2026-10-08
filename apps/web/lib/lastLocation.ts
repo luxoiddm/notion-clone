@@ -30,3 +30,12 @@ export function getLastLocation(): LastLocation | null {
     return null;
   }
 }
+
+/** Забыть последнее место — например, человек сам вернулся к списку чатов. */
+export function clearLastLocation(): void {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    // см. saveLastLocation
+  }
+}

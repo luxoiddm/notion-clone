@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { assertSafeId, joinSafe, sanitizeFileName } from './pathSafety.js';
+import { randomUUID, randomBytes } from 'node:crypto';
+import { assertSafeId, joinSafe, sanitizeFileName, sanitizeDisplayFileName, safeExtension } from './pathSafety.js';
 import { lockManager } from './lockManager.js';
 import {
   AssetInfo,
@@ -15,6 +16,12 @@ import {
   PublicNode,
   PublicNodeStatus,
   PublicSite,
+  PublicInboxItem,
+  SiteImageKind,
+  FAVICON_SIZES,
+  UserFileManifestEntry,
+  FileRef,
+  FaviconSize,
   PUBLIC_SITE_RESERVED_SLUGS,
   SiteSettings,
   UserFileInfo,
@@ -65,6 +72,39 @@ function isNodeError(err: unknown): err is NodeJS.ErrnoException {
 }
 
 /**
+ * Strips HTML tags and decodes the handful of entities
+ * `lib/sanitize.ts`'s `escapeToHtml()` (the web app's client-side
+ * equivalent) ever produces (`&amp;`/`&lt;`/`&gt;`/`&quot;`), so
+ * `searchPages` below matches against what a reader actually *sees*, not
+ * the raw markup `PageBlock.content` stores for rich-text blocks (bold,
+ * italic, links, etc.). Without this, a word with formatting applied to
+ * only part of it — e.g. two letters italicized in the middle — would
+ * never match a search for the whole word: the tag characters sit
+ * literally in the middle of the string, splitting
+ * `разреш<i>ен</i>ная` away from a search for `разрешенная`.
+ *
+ * There's no DOM available server-side (this runs in Node, not a
+ * browser) to do this properly the way the client does elsewhere in this
+ * codebase (e.g. `lib/pasteToBlocks.ts`'s `plainTextOf`, which sets
+ * `div.innerHTML` and reads `.textContent`) — a real HTML parser
+ * dependency would be overkill for "does this substring appear in the
+ * rendered text", so this is a lightweight regex approximation instead,
+ * good enough for matching purposes but not a general-purpose HTML-to-
+ * text converter (it won't, for instance, insert a space where a block-
+ * level element boundary would visually separate two words — irrelevant
+ * here since this only ever runs on one already-inline block's content
+ * at a time, never a whole page of block-level markup at once).
+ */
+function stripHtmlForSearch(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"');
+}
+
+/**
  * Fills in defaults for fields that didn't exist yet when older user
  * records were written (`avatarUrl`/`accentColor` — added after some
  * users already existed). Same reasoning as `normalizeMessage` in
@@ -83,6 +123,7 @@ function normalizeUserMeta(raw: Partial<UserMeta>): UserMeta {
     avatarUrl: raw.avatarUrl ?? null,
     accentColor: raw.accentColor ?? null,
     enabled: raw.enabled ?? true,
+    dismissedAt: raw.dismissedAt ?? null,
   };
 }
 
@@ -146,6 +187,12 @@ export class FsEngine {
     copyrightText: '',
     loginLogoUrl: null,
     headerLogoUrl: null,
+    loginBackgroundUrl: null,
+    faviconUrl: null,
+    loginLogoDarkUrl: null,
+    headerLogoDarkUrl: null,
+    darkLogoMode: 'auto',
+    logoTone: {},
   };
 
   /**
@@ -167,8 +214,17 @@ export class FsEngine {
         ...FsEngine.SITE_SETTINGS_DEFAULTS,
         updatedAt: new Date(0).toISOString(),
         ...raw,
-        loginLogoUrl: raw.loginLogoUrl ?? legacyLogoUrl,
-        headerLogoUrl: raw.headerLogoUrl ?? legacyLogoUrl,
+        // Наследный общий `logoUrl` подставляем только если поле ещё ни разу
+        // не задавалось. Явный null («логотип убран») — это осознанный
+        // выбор, и через `??` он бы снова превращался в старый логотип.
+        loginLogoUrl: 'loginLogoUrl' in raw ? (raw.loginLogoUrl ?? null) : legacyLogoUrl,
+        headerLogoUrl: 'headerLogoUrl' in raw ? (raw.headerLogoUrl ?? null) : legacyLogoUrl,
+        loginBackgroundUrl: raw.loginBackgroundUrl ?? null,
+        faviconUrl: raw.faviconUrl ?? null,
+        loginLogoDarkUrl: raw.loginLogoDarkUrl ?? null,
+        headerLogoDarkUrl: raw.headerLogoDarkUrl ?? null,
+        darkLogoMode: raw.darkLogoMode === 'invert' || raw.darkLogoMode === 'none' ? raw.darkLogoMode : 'auto',
+        logoTone: raw.logoTone && typeof raw.logoTone === 'object' ? raw.logoTone : {},
       };
     } catch (err) {
       if (err instanceof FsEngineError && err.code === 'NOT_FOUND') {
@@ -188,8 +244,40 @@ export class FsEngine {
     });
   }
 
-  private siteLogoPath(kind: 'login' | 'header'): string {
+  private siteLogoPath(kind: SiteImageKind): string {
     return joinSafe(this.root, 'site', `logo-${kind}.webp`);
+  }
+
+  /** Поле SiteSettings, в котором хранится URL картинки этого вида. */
+  static siteImageField(
+    kind: SiteImageKind,
+  ): 'loginLogoUrl' | 'headerLogoUrl' | 'loginBackgroundUrl' | 'loginLogoDarkUrl' | 'headerLogoDarkUrl' {
+    switch (kind) {
+      case 'login':
+        return 'loginLogoUrl';
+      case 'header':
+        return 'headerLogoUrl';
+      case 'login-dark':
+        return 'loginLogoDarkUrl';
+      case 'header-dark':
+        return 'headerLogoDarkUrl';
+      default:
+        return 'loginBackgroundUrl';
+    }
+  }
+
+  /** Убирает картинку сайта (логотип или фон экрана входа): удаляет файл и обнуляет ссылку в настройках. */
+  async deleteSiteImage(kind: SiteImageKind): Promise<SiteSettings> {
+    const imgPath = this.siteLogoPath(kind);
+    await lockManager.run(imgPath, async () => {
+      await fs.rm(imgPath, { force: true });
+    });
+    if (kind === 'login' || kind === 'header') {
+      const { logoTone } = await this.getSiteSettings();
+      const { [kind]: _removed, ...rest } = logoTone;
+      return this.updateSiteSettings({ [FsEngine.siteImageField(kind)]: null, logoTone: rest });
+    }
+    return this.updateSiteSettings({ [FsEngine.siteImageField(kind)]: null });
   }
 
   /**
@@ -207,7 +295,7 @@ export class FsEngine {
    * Append `SiteSettings.updatedAt` as a cache-busting query string
    * (`?v=${updatedAt}`) wherever this is used as an `<img src>`.
    */
-  async saveSiteLogo(kind: 'login' | 'header', data: Buffer): Promise<string> {
+  async saveSiteLogo(kind: SiteImageKind, data: Buffer): Promise<string> {
     const logoPath = this.siteLogoPath(kind);
     await fs.mkdir(path.dirname(logoPath), { recursive: true });
     await lockManager.run(logoPath, async () => {
@@ -216,9 +304,61 @@ export class FsEngine {
     return `/api/site-settings/logo/${kind}`;
   }
 
+  // ---- Favicon -----------------------------------------------------------
+  // Хранится набором готовых PNG (`site/favicon-{32,180,192,512}.png`) —
+  // их режет из загруженной картинки admin.routes.ts — либо, если
+  // загружен именно .ico, как есть (`site/favicon.ico`, только для
+  // вкладки браузера). Отдаётся публичным GET /api/site-settings/favicon/:size.
+
+  private faviconPath(size: FaviconSize | 'ico'): string {
+    return joinSafe(this.root, 'site', size === 'ico' ? 'favicon.ico' : `favicon-${size}.png`);
+  }
+
+  /** Сохраняет новый favicon, предварительно удалив старый (PNG-набор или .ico). Возвращает обновлённые настройки. */
+  async saveFavicon(files: { png?: Partial<Record<FaviconSize, Buffer>>; ico?: Buffer }): Promise<SiteSettings> {
+    await this.removeFaviconFiles();
+    const dir = path.dirname(this.faviconPath('ico'));
+    await fs.mkdir(dir, { recursive: true });
+    if (files.ico) await fs.writeFile(this.faviconPath('ico'), files.ico);
+    for (const size of FAVICON_SIZES) {
+      const buf = files.png?.[size];
+      if (buf) await fs.writeFile(this.faviconPath(size), buf);
+    }
+    return this.updateSiteSettings({ faviconUrl: '/api/site-settings/favicon/32' });
+  }
+
+  private async removeFaviconFiles(): Promise<void> {
+    await fs.rm(this.faviconPath('ico'), { force: true });
+    for (const size of FAVICON_SIZES) await fs.rm(this.faviconPath(size), { force: true });
+  }
+
+  /** Возвращает к стандартной иконке. */
+  async deleteFavicon(): Promise<SiteSettings> {
+    await this.removeFaviconFiles();
+    return this.updateSiteSettings({ faviconUrl: null });
+  }
+
+  /**
+   * Путь к файлу favicon нужного размера или null, если своего нет
+   * (тогда маршрут отдаёт стандартную иконку). Для 32px (вкладка)
+   * подходит и загруженный .ico; для остальных размеров нужен PNG.
+   */
+  async resolveFavicon(size: FaviconSize): Promise<{ path: string; type: string } | null> {
+    const exists = async (p: string) => !!(await fs.stat(p).catch(() => null));
+    const png = this.faviconPath(size);
+    if (await exists(png)) return { path: png, type: 'image/png' };
+    if (size === 32 && (await exists(this.faviconPath('ico')))) return { path: this.faviconPath('ico'), type: 'image/x-icon' };
+    return null;
+  }
+
   /** Resolves the absolute path to the current logo of this kind, for the public serving route. Doesn't check the file actually exists — same as `getUserFileAbsolutePath`, the route's own `res.sendFile()` call surfaces a missing file as its own 404, nothing extra to do here. */
-  getSiteLogoAbsolutePath(kind: 'login' | 'header'): string {
+  getSiteLogoAbsolutePath(kind: SiteImageKind): string {
     return this.siteLogoPath(kind);
+  }
+
+  /** Байты текущей картинки сайта или null, если её нет. */
+  async readSiteLogo(kind: SiteImageKind): Promise<Buffer | null> {
+    return fs.readFile(this.siteLogoPath(kind)).catch(() => null);
   }
 
   // ---------------------------------------------------------------------
@@ -337,7 +477,57 @@ export class FsEngine {
 
   // ---------------------------------------------------------------------
   // Users
+  //
+  // Папка пользователя — `users/{id}` (действующие) или `dismissed/{id}`
+  // (уволенные: «Уволить» в админке переносит туда всю папку целиком).
+  // Все пути к данным пользователя строятся через userRoot(), поэтому
+  // ссылки вида /api/files/serve/{id}/… и /?owner={id}&… продолжают
+  // работать после переноса — в адресах нет физического расположения.
   // ---------------------------------------------------------------------
+
+  private dismissedIds: Set<string> | null = null;
+
+  private dismissedSet(): Set<string> {
+    if (!this.dismissedIds) {
+      try {
+        this.dismissedIds = new Set(
+          readdirSync(joinSafe(this.root, 'dismissed'), { withFileTypes: true })
+            .filter((e) => e.isDirectory())
+            .map((e) => e.name),
+        );
+      } catch {
+        this.dismissedIds = new Set();
+      }
+    }
+    return this.dismissedIds;
+  }
+
+  /** Пользователь уволен — его папка лежит в `dismissed/`. */
+  isDismissed(userId: string): boolean {
+    return this.dismissedSet().has(userId);
+  }
+
+  /** Абсолютный путь к папке пользователя (действующего или уволенного). */
+  private userRoot(userId: string): string {
+    assertSafeId(userId, 'userId');
+    return joinSafe(this.root, this.isDismissed(userId) ? 'dismissed' : 'users', userId);
+  }
+
+  /** Путь к папке пользователя относительно STORAGE_ROOT — для админки («где это на диске»). */
+  userFolderRelative(userId: string): string {
+    return `${this.isDismissed(userId) ? 'dismissed' : 'users'}/${assertSafeId(userId, 'userId')}`;
+  }
+
+  /** id всех пользователей, у которых есть папка — действующих и уволенных. */
+  private async allUserIds(): Promise<string[]> {
+    const ids: string[] = [];
+    for (const base of ['users', 'dismissed']) {
+      const dir = joinSafe(this.root, base);
+      if (!(await this.exists(dir))) continue;
+      for (const e of await fs.readdir(dir, { withFileTypes: true })) if (e.isDirectory()) ids.push(e.name);
+    }
+    return ids;
+  }
 
   /** Creates a user's root folder. Called only from admin-invite flows. */
   async createUser(userId: string, meta: Omit<UserMeta, 'id' | 'createdAt' | 'avatarUrl' | 'accentColor' | 'enabled'>): Promise<UserMeta> {
@@ -357,7 +547,7 @@ export class FsEngine {
 
   async getUser(userId: string): Promise<UserMeta> {
     assertSafeId(userId, 'userId');
-    return normalizeUserMeta(await readJson<Partial<UserMeta>>(joinSafe(this.root, 'users', userId, 'meta.json')));
+    return normalizeUserMeta(await readJson<Partial<UserMeta>>(joinSafe(this.userRoot(userId), 'meta.json')));
   }
 
   /** Used by the one-time bootstrap-admin flow to check whether any account already exists. */
@@ -370,15 +560,10 @@ export class FsEngine {
 
   /** Lists every user in the workspace (Admin panel). No pagination — fine at admin-panel scale. */
   async listUsers(): Promise<UserMeta[]> {
-    const usersDir = joinSafe(this.root, 'users');
-    if (!(await this.exists(usersDir))) return [];
-
-    const entries = await fs.readdir(usersDir, { withFileTypes: true });
     const metas: UserMeta[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+    for (const id of await this.allUserIds()) {
       try {
-        metas.push(normalizeUserMeta(await readJson<Partial<UserMeta>>(joinSafe(usersDir, entry.name, 'meta.json'))));
+        metas.push(normalizeUserMeta(await readJson<Partial<UserMeta>>(joinSafe(this.userRoot(id), 'meta.json'))));
       } catch {
         // Skip a folder without a valid meta.json rather than failing the whole listing.
       }
@@ -388,13 +573,9 @@ export class FsEngine {
 
   async updateUser(userId: string, patch: Partial<Pick<UserMeta, 'displayName' | 'role' | 'enabled'>>): Promise<UserMeta> {
     assertSafeId(userId, 'userId');
-    const metaPath = joinSafe(this.root, 'users', userId, 'meta.json');
-    return lockManager.run(metaPath, async () => {
-      const meta = normalizeUserMeta(await readJson<Partial<UserMeta>>(metaPath));
-      const updated: UserMeta = { ...meta, ...patch };
-      await writeJsonAtomic(metaPath, updated);
-      return updated;
-    });
+    const updated = await this.patchUserMeta(userId, patch);
+    void this.writeUsersIndex().catch(() => undefined);
+    return updated;
   }
 
   /**
@@ -409,7 +590,7 @@ export class FsEngine {
    */
   async updateOwnProfile(userId: string, patch: Partial<Pick<UserMeta, 'avatarUrl' | 'accentColor'>>): Promise<UserMeta> {
     assertSafeId(userId, 'userId');
-    const metaPath = joinSafe(this.root, 'users', userId, 'meta.json');
+    const metaPath = joinSafe(this.userRoot(userId), 'meta.json');
     return lockManager.run(metaPath, async () => {
       const meta = normalizeUserMeta(await readJson<Partial<UserMeta>>(metaPath));
       const updated: UserMeta = { ...meta, ...patch };
@@ -418,14 +599,103 @@ export class FsEngine {
     });
   }
 
-  /** Deletes a user's entire folder (all their projects/pages/history/assets) and their credentials. */
+  /**
+   * Удаляет пользователя полностью: папку (страницы, история, файлы — где
+   * бы она ни лежала, в users/ или dismissed/), учётные данные, публичные
+   * ссылки на его файлы и записи в индексе использования файлов.
+   */
   async deleteUser(userId: string): Promise<void> {
     assertSafeId(userId, 'userId');
-    const userDir = joinSafe(this.root, 'users', userId);
+    const userDir = this.userRoot(userId);
     await lockManager.run(userDir, async () => {
       await fs.rm(userDir, { recursive: true, force: true });
     });
+    this.dismissedSet().delete(userId);
     await this.removeCredentialsForUser(userId);
+    await this.updatePublicFileLinks((links) => {
+      for (const [t, l] of Object.entries(links)) if (l.ownerId === userId) delete links[t];
+    });
+    if (await this.readFileRefs()) {
+      await this.updateFileRefs((idx) => {
+        for (const k of Object.keys(idx.files)) if (k.startsWith(`${userId}/`)) delete idx.files[k];
+        for (const k of Object.keys(idx.pages)) if (k.startsWith(`${userId}/`)) delete idx.pages[k];
+      });
+    }
+    await this.writeUsersIndex().catch(() => undefined);
+  }
+
+  /**
+   * «Уволить»: переносит всю папку пользователя в `dismissed/{id}` и
+   * запрещает вход. Документы и файлы остаются доступны тем, кому были
+   * открыты (ссылки по id не меняются), удалять их может только админ
+   * через файловый менеджер.
+   */
+  async dismissUser(userId: string): Promise<UserMeta> {
+    assertSafeId(userId, 'userId');
+    if (this.isDismissed(userId)) return this.getUser(userId);
+    const from = joinSafe(this.root, 'users', userId);
+    const to = joinSafe(this.root, 'dismissed', userId);
+    if (!(await this.exists(from))) throw new FsEngineError(`User not found: ${userId}`, 'NOT_FOUND');
+    await fs.mkdir(path.dirname(to), { recursive: true });
+    await lockManager.run(from, async () => {
+      await fs.rename(from, to);
+    });
+    this.dismissedSet().add(userId);
+    const meta = await this.patchUserMeta(userId, { enabled: false, dismissedAt: new Date().toISOString() });
+    await this.writeUsersIndex().catch(() => undefined);
+    return meta;
+  }
+
+  /** Вернуть уволенного: папка обратно в `users/`, вход снова разрешён. */
+  async restoreUser(userId: string): Promise<UserMeta> {
+    assertSafeId(userId, 'userId');
+    if (!this.isDismissed(userId)) return this.getUser(userId);
+    const from = joinSafe(this.root, 'dismissed', userId);
+    const to = joinSafe(this.root, 'users', userId);
+    await lockManager.run(from, async () => {
+      await fs.rename(from, to);
+    });
+    this.dismissedSet().delete(userId);
+    const meta = await this.patchUserMeta(userId, { enabled: true, dismissedAt: null });
+    await this.writeUsersIndex().catch(() => undefined);
+    return meta;
+  }
+
+  private async patchUserMeta(userId: string, patch: Partial<UserMeta>): Promise<UserMeta> {
+    const metaPath = joinSafe(this.userRoot(userId), 'meta.json');
+    return lockManager.run(metaPath, async () => {
+      const meta = normalizeUserMeta(await readJson<Partial<UserMeta>>(metaPath));
+      const updated: UserMeta = { ...meta, ...patch };
+      await writeJsonAtomic(metaPath, updated);
+      return updated;
+    });
+  }
+
+  /**
+   * `STORAGE_ROOT/USERS.txt` — какая папка чья: id → имя, email, статус,
+   * путь. Чтобы админ в консоли не гадал по UUID. Перезаписывается при
+   * создании, изменении, увольнении и удалении пользователей и на старте.
+   */
+  async writeUsersIndex(): Promise<void> {
+    const [users, creds] = await Promise.all([this.listUsers(), this.getAllCredentials().catch(() => ({}) as Record<string, { userId: string }>)]);
+    const emailById = new Map<string, string>();
+    for (const [email, c] of Object.entries(creds)) emailById.set(c.userId, email);
+    const rows = users
+      .map((u) => ({
+        folder: this.userFolderRelative(u.id),
+        name: u.displayName,
+        email: emailById.get(u.id) ?? '—',
+        status: u.dismissedAt ? `уволен ${u.dismissedAt.slice(0, 10)}` : u.enabled ? 'активен' : 'отключён',
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    const lines = [
+      '# Папки пользователей (файл создаётся автоматически, не редактируйте)',
+      `# Обновлено: ${new Date().toISOString()}`,
+      '',
+      ...rows.map((r) => `${r.folder.padEnd(48)}  ${r.name}  <${r.email}>  [${r.status}]`),
+      '',
+    ];
+    await fs.writeFile(joinSafe(this.root, 'USERS.txt'), lines.join('\n'), 'utf-8');
   }
 
   // ---------------------------------------------------------------------
@@ -460,6 +730,7 @@ export class FsEngine {
       all[email.toLowerCase()] = { userId, passwordHash };
       await writeJsonAtomic(filePath, all);
     });
+    void this.writeUsersIndex().catch(() => undefined);
   }
 
   async removeCredentialsForUser(userId: string): Promise<void> {
@@ -487,7 +758,7 @@ export class FsEngine {
   async createProject(ownerId: string, name: string): Promise<ProjectMeta> {
     assertSafeId(ownerId, 'ownerId');
     const projectId = randomUUID();
-    const projectDir = joinSafe(this.root, 'users', ownerId, projectId);
+    const projectDir = joinSafe(this.userRoot(ownerId), projectId);
     await fs.mkdir(joinSafe(projectDir, 'pages'), { recursive: true });
 
     const now = new Date().toISOString();
@@ -498,7 +769,7 @@ export class FsEngine {
 
   async listProjects(ownerId: string): Promise<ProjectMeta[]> {
     assertSafeId(ownerId, 'ownerId');
-    const userDir = joinSafe(this.root, 'users', ownerId);
+    const userDir = this.userRoot(ownerId);
     if (!(await this.exists(userDir))) return [];
 
     const entries = await fs.readdir(userDir, { withFileTypes: true });
@@ -519,7 +790,7 @@ export class FsEngine {
   // ---------------------------------------------------------------------
 
   private pagesDir(ownerId: string, projectId: string): string {
-    return joinSafe(this.root, 'users', assertSafeId(ownerId, 'ownerId'), assertSafeId(projectId, 'projectId'), 'pages');
+    return joinSafe(this.userRoot(assertSafeId(ownerId, 'ownerId')), assertSafeId(projectId, 'projectId'), 'pages');
   }
 
   private pageDir(ownerId: string, projectId: string, pageId: string): string {
@@ -747,6 +1018,10 @@ export class FsEngine {
       const updatedMeta: PageMeta = { ...meta, updatedAt: new Date().toISOString(), updatedBy: authorId };
       await writeJsonAtomic(metaPath, updatedMeta);
 
+      // Какие файлы из личных хранилищ вставлены в страницу — от этого
+      // зависит доступ к ним по прямой ссылке (см. updatePageFileRefs).
+      await this.updatePageFileRefs(ownerId, projectId, pageId, content);
+
       return { meta: updatedMeta, snapshot };
     });
   }
@@ -783,14 +1058,10 @@ export class FsEngine {
    * updated incrementally by `updatePageSharing` instead of scanning.
    */
   async listSharedPages(viewerId: string): Promise<PageNode[]> {
-    const usersDir = joinSafe(this.root, 'users');
-    if (!(await this.exists(usersDir))) return [];
-
-    const userEntries = (await fs.readdir(usersDir, { withFileTypes: true })).filter((e) => e.isDirectory());
+    // Включая уволенных: их страницы остаются у тех, кому были открыты.
     const results: PageNode[] = [];
 
-    for (const userEntry of userEntries) {
-      const ownerId = userEntry.name;
+    for (const ownerId of await this.allUserIds()) {
       if (ownerId === viewerId) continue; // "shared with me" excludes my own pages
 
       let projects: ProjectMeta[];
@@ -1113,51 +1384,74 @@ export class FsEngine {
   // ---------------------------------------------------------------------
 
   private userFilesDir(userId: string): string {
-    return joinSafe(this.root, 'users', assertSafeId(userId, 'userId'), 'files');
+    return joinSafe(this.userRoot(userId), 'files');
   }
 
   private userFilesManifestPath(userId: string): string {
     return joinSafe(this.userFilesDir(userId), 'manifest.json');
   }
 
-  private async readUserFilesManifest(
-    userId: string,
-  ): Promise<Record<string, { originalName: string; mimeType: string; size: number; uploadedAt: string }>> {
+  private async readUserFilesManifest(userId: string): Promise<Record<string, UserFileManifestEntry>> {
     try {
-      return await readJson<Record<string, { originalName: string; mimeType: string; size: number; uploadedAt: string }>>(
-        this.userFilesManifestPath(userId),
-      );
+      return await readJson<Record<string, UserFileManifestEntry>>(this.userFilesManifestPath(userId));
     } catch (err) {
       if (err instanceof FsEngineError && err.code === 'NOT_FOUND') return {};
       throw err;
     }
   }
 
+  private toUserFileInfo(userId: string, fileName: string, e: UserFileManifestEntry): UserFileInfo {
+    return {
+      fileName,
+      originalName: e.originalName,
+      mimeType: e.mimeType,
+      size: e.size,
+      uploadedAt: e.uploadedAt,
+      url: `/api/files/serve/${userId}/${fileName}`,
+      ownerId: userId,
+      sharedWith: e.sharedWith ?? [],
+      publicToken: e.publicToken ?? null,
+    };
+  }
+
   async listUserFiles(userId: string): Promise<UserFileInfo[]> {
     const manifest = await this.readUserFilesManifest(userId);
     return Object.entries(manifest)
-      .map(([fileName, info]) => ({ fileName, ...info, url: `/api/files/serve/${userId}/${fileName}` }))
+      .map(([fileName, info]) => this.toUserFileInfo(userId, fileName, info))
       .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
   }
 
+  /** Описание одного файла или null, если такого нет в манифесте. */
+  async getUserFile(userId: string, fileName: string): Promise<UserFileInfo | null> {
+    assertSafeId(userId, 'userId');
+    const manifest = await this.readUserFilesManifest(userId);
+    const e = manifest[fileName];
+    return e ? this.toUserFileInfo(userId, fileName, e) : null;
+  }
+
+  /**
+   * Сохраняет файл в личное хранилище. Имя на диске — всегда ASCII
+   * (`{время}-{случайное}{.расширение}`), а исходное имя (с кириллицей и
+   * т.п.) хранится в манифесте и отдаётся при скачивании.
+   */
   async saveUserFile(userId: string, originalFileName: string, data: Buffer, mimeType: string): Promise<UserFileInfo> {
     assertSafeId(userId, 'userId');
     const dir = this.userFilesDir(userId);
     await fs.mkdir(dir, { recursive: true });
 
-    const safeName = sanitizeFileName(originalFileName);
-    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}-${safeName}`;
+    const displayName = sanitizeDisplayFileName(originalFileName);
+    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}${safeExtension(displayName)}`;
     await fs.writeFile(joinSafe(dir, fileName), data);
 
-    const uploadedAt = new Date().toISOString();
+    const entry: UserFileManifestEntry = { originalName: displayName, mimeType, size: data.byteLength, uploadedAt: new Date().toISOString() };
     const manifestPath = this.userFilesManifestPath(userId);
     await lockManager.run(manifestPath, async () => {
       const manifest = await this.readUserFilesManifest(userId);
-      manifest[fileName] = { originalName: safeName, mimeType, size: data.byteLength, uploadedAt };
+      manifest[fileName] = entry;
       await writeJsonAtomic(manifestPath, manifest);
     });
 
-    return { fileName, originalName: safeName, mimeType, size: data.byteLength, uploadedAt, url: `/api/files/serve/${userId}/${fileName}` };
+    return this.toUserFileInfo(userId, fileName, entry);
   }
 
   async deleteUserFile(userId: string, fileName: string): Promise<void> {
@@ -1165,14 +1459,17 @@ export class FsEngine {
     const dir = this.userFilesDir(userId);
     const manifestPath = this.userFilesManifestPath(userId);
 
+    let token: string | null = null;
     await lockManager.run(manifestPath, async () => {
       await fs.rm(joinSafe(dir, safeName), { force: true });
       const manifest = await this.readUserFilesManifest(userId);
       if (manifest[safeName]) {
+        token = manifest[safeName]!.publicToken ?? null;
         delete manifest[safeName];
         await writeJsonAtomic(manifestPath, manifest);
       }
     });
+    if (token) await this.updatePublicFileLinks((links) => void delete links[token!]);
   }
 
   /** Resolves the absolute, traversal-safe path to a personal file, for the serving route. */
@@ -1181,9 +1478,594 @@ export class FsEngine {
     return joinSafe(this.userFilesDir(userId), safeName);
   }
 
+  private async patchUserFile(
+    userId: string,
+    fileName: string,
+    fn: (e: UserFileManifestEntry) => void,
+  ): Promise<UserFileInfo> {
+    assertSafeId(userId, 'userId');
+    const manifestPath = this.userFilesManifestPath(userId);
+    return lockManager.run(manifestPath, async () => {
+      const manifest = await this.readUserFilesManifest(userId);
+      const e = manifest[fileName];
+      if (!e) throw new FsEngineError(`File not found: ${fileName}`, 'NOT_FOUND');
+      fn(e);
+      await writeJsonAtomic(manifestPath, manifest);
+      return this.toUserFileInfo(userId, fileName, e);
+    });
+  }
+
+  /** Кому открыт доступ к файлу (id пользователей, '*' — всем сотрудникам). Полностью заменяет список. */
+  async setUserFileSharing(userId: string, fileName: string, sharedWith: string[]): Promise<UserFileInfo> {
+    const clean = [...new Set(sharedWith.filter((id) => id === '*' || /^[a-zA-Z0-9_-]{1,128}$/.test(id)))].filter((id) => id !== userId);
+    return this.patchUserFile(userId, fileName, (e) => {
+      e.sharedWith = clean;
+    });
+  }
+
+  // ---- Файловый менеджер администратора ----------------------------------
+
+  /** Суммарный размер папки на диске (рекурсивно, без перехода по ссылкам). */
+  private async dirSize(dir: string): Promise<number> {
+    let total = 0;
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return 0;
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) total += await this.dirSize(p);
+      else if (e.isFile()) total += (await fs.stat(p).catch(() => ({ size: 0 }))).size;
+    }
+    return total;
+  }
+
+  /** Сводка для таблицы пользователей: файлы, документы, общий объём папки. */
+  async getUserStorageSummary(userId: string): Promise<{ filesCount: number; filesBytes: number; pagesCount: number; totalBytes: number; folder: string }> {
+    const files = await this.listUserFiles(userId).catch(() => []);
+    const pages = await this.listUserPagesFlat(userId).catch(() => []);
+    return {
+      filesCount: files.length,
+      filesBytes: files.reduce((s, f) => s + f.size, 0),
+      pagesCount: pages.length,
+      totalBytes: await this.dirSize(this.userRoot(userId)),
+      folder: this.userFolderRelative(userId),
+    };
+  }
+
+  /** Все страницы пользователя плоским списком (для админки): путь в дереве, проект, размер папки страницы. */
+  async listUserPagesFlat(
+    userId: string,
+  ): Promise<
+    { projectId: string; projectName: string; id: string; title: string; icon: string | null; path: string[]; updatedAt: string; bytes: number; ownFiles: number; children: number }[]
+  > {
+    const out: {
+      projectId: string;
+      projectName: string;
+      id: string;
+      title: string;
+      icon: string | null;
+      path: string[];
+      updatedAt: string;
+      bytes: number;
+      ownFiles: number;
+      children: number;
+    }[] = [];
+    const refs = await this.readFileRefs();
+    const countAll = (n: PageNode): number => n.children.reduce((s2, c) => s2 + 1 + countAll(c), 0);
+    for (const project of await this.listProjects(userId)) {
+      const walk = async (nodes: PageNode[], trail: string[]) => {
+        for (const n of nodes) {
+          out.push({
+            projectId: project.id,
+            projectName: project.name,
+            id: n.id,
+            title: n.title,
+            icon: n.icon,
+            path: trail,
+            updatedAt: n.updatedAt,
+            bytes: await this.dirSize(this.pageDir(userId, project.id, n.id)),
+            ownFiles: (refs?.pages[`${userId}/${project.id}/${n.id}`] ?? []).filter((k) => k.startsWith(`${userId}/`)).length,
+            children: countAll(n),
+          });
+          await walk(n.children, [...trail, n.title || 'Без названия']);
+        }
+      };
+      await walk(await this.listPages(userId, project.id).catch(() => []), []);
+    }
+    return out;
+  }
+
+  /**
+   * Переносит документ (со всеми вложенными страницами) другому
+   * пользователю — в его первый проект (или указанный), в корень дерева.
+   * Папки страниц переезжают целиком (история, комментарии, вложения), id
+   * страниц сохраняются. Обновляются: владелец/проект в meta, адреса
+   * вложений страницы (/api/storage/…), ссылки на эти страницы из ВСЕХ
+   * документов (/page-ref/…), разделы публичных сайтов и очередь заявок,
+   * индекс использования файлов. Ссылки из чатов (pageRef) обновляет
+   * вызывающий через ChatEngine.replacePageRefs по возвращённой карте.
+   * `withFiles` — заодно перенести файлы прежнего владельца, вставленные
+   * в эти документы (moveUserFile — со всеми ссылками).
+   */
+  async movePages(input: {
+    fromUserId: string;
+    projectId: string;
+    pageId: string;
+    toUserId: string;
+    toProjectId?: string | null;
+    actorId: string;
+    withFiles?: boolean;
+  }): Promise<{
+    movedIds: string[];
+    toProjectId: string;
+    pageMoves: Map<string, { ownerId: string; projectId: string }>;
+    fileMoves: { oldUrl: string; newUrl: string; chatIds: string[] }[];
+  }> {
+    const { fromUserId: from, projectId: proj, pageId, toUserId: to, actorId } = input;
+    assertSafeId(from, 'userId');
+    assertSafeId(to, 'userId');
+    await this.getPageMeta(from, proj, pageId); // NOT_FOUND
+    await this.getUser(to);
+
+    let toProj = input.toProjectId ?? null;
+    if (!toProj) {
+      const projects = await this.listProjects(to);
+      toProj = projects[0]?.id ?? (await this.createProject(to, 'Моё пространство')).id;
+    }
+    if (from === to && proj === toProj) return { movedIds: [], toProjectId: toProj, pageMoves: new Map(), fileMoves: [] };
+
+    const ids = [pageId, ...(await this.collectDescendantPageIds(from, proj, pageId))];
+    await fs.mkdir(this.pagesDir(to, toProj), { recursive: true });
+    const rootOrder = Math.max(0, ...(await this.listPages(to, toProj).catch(() => [])).map((n) => n.order)) + 1;
+
+    // 1. Папки страниц и meta.
+    for (const id of ids) {
+      const src = this.pageDir(from, proj, id);
+      const dst = this.pageDir(to, toProj, id);
+      await lockManager.run(src, async () => {
+        await fs.rename(src, dst);
+      });
+      const metaPath = joinSafe(dst, 'meta.json');
+      const meta = await readPageMeta(metaPath);
+      const assetPrefixOld = `/api/storage/${from}/${proj}/pages/`;
+      const assetPrefixNew = `/api/storage/${to}/${toProj}/pages/`;
+      await writeJsonAtomic(metaPath, {
+        ...meta,
+        ownerId: to,
+        projectId: toProj,
+        ...(id === pageId ? { parentId: null, order: rootOrder } : {}),
+        sharing: meta.sharing.filter((g) => g.userId !== to),
+        coverImage: meta.coverImage ? meta.coverImage.split(assetPrefixOld).join(assetPrefixNew) : meta.coverImage,
+      } satisfies PageMeta);
+    }
+
+    // 2. Тексты: вложения перенесённых страниц и ссылки на них из всех документов.
+    const replacements: [string, string][] = [];
+    for (const id of ids) {
+      replacements.push([`/api/storage/${from}/${proj}/pages/${id}/`, `/api/storage/${to}/${toProj}/pages/${id}/`]);
+      replacements.push([`/page-ref/${from}/${proj}/${id}`, `/page-ref/${to}/${toProj}/${id}`]);
+    }
+    for (const owner of await this.allUserIds()) {
+      for (const project of await this.listProjects(owner).catch(() => [])) {
+        const dir = this.pagesDir(owner, project.id);
+        let entries: import('node:fs').Dirent[] = [];
+        try {
+          entries = await fs.readdir(dir, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const e of entries) {
+          if (!e.isDirectory()) continue;
+          const contentPath = joinSafe(dir, e.name, 'content.json');
+          await lockManager.run(joinSafe(dir, e.name), async () => {
+            let text: string;
+            try {
+              text = await fs.readFile(contentPath, 'utf-8');
+            } catch {
+              return;
+            }
+            let next = text;
+            for (const [a, b] of replacements) if (next.includes(a)) next = next.split(a).join(b);
+            if (next !== text) await writeJsonAtomic(contentPath, JSON.parse(next));
+          });
+        }
+      }
+    }
+
+    // 3. Индекс использования файлов: ключи страниц.
+    const pageMoves = new Map<string, { ownerId: string; projectId: string }>();
+    for (const id of ids) pageMoves.set(`${from}/${proj}/${id}`, { ownerId: to, projectId: toProj });
+    if (await this.readFileRefs()) {
+      await this.updateFileRefs((idx) => {
+        for (const id of ids) {
+          const oldKey = `${from}/${proj}/${id}`;
+          const newKey = `${to}/${toProj}/${id}`;
+          const fileKeys = idx.pages[oldKey];
+          if (!fileKeys) continue;
+          delete idx.pages[oldKey];
+          idx.pages[newKey] = fileKeys;
+          for (const fk of fileKeys) idx.files[fk] = (idx.files[fk] ?? []).map((r) => (r === `page:${oldKey}` ? `page:${newKey}` : r));
+        }
+      });
+    }
+
+    // 4. Публичные сайты и очередь заявок.
+    const idSet = new Set(ids);
+    for (const site of await this.listPublicSites().catch(() => [])) {
+      const filePath = this.publicSiteFilePath(site.id);
+      await lockManager.run(filePath, async () => {
+        const cur = await this.readPublicSiteFile(site.id);
+        let changed = false;
+        const nodes = cur.nodes.map((n) => {
+          if (n.ownerId === from && n.projectId === proj && idSet.has(n.pageId)) {
+            changed = true;
+            return { ...n, ownerId: to, projectId: toProj! };
+          }
+          return n;
+        });
+        if (changed) await writeJsonAtomic(filePath, { site: cur.site, nodes });
+      });
+    }
+    await lockManager.run(this.publicInboxPath(), async () => {
+      const items = await this.readPublicInbox();
+      let changed = false;
+      const next = items.map((i) => {
+        if (i.ownerId === from && i.projectId === proj && idSet.has(i.pageId)) {
+          changed = true;
+          return { ...i, ownerId: to, projectId: toProj! };
+        }
+        return i;
+      });
+      if (changed) await writeJsonAtomic(this.publicInboxPath(), { items: next });
+    });
+
+    // 5. Файлы прежнего владельца, вставленные в эти документы.
+    const fileMoves: { oldUrl: string; newUrl: string; chatIds: string[] }[] = [];
+    if (input.withFiles && from !== to) {
+      const keys = new Set<string>();
+      for (const id of ids) {
+        const content = await this.getPageContent(to, toProj, id).catch(() => null);
+        if (content) for (const k of FsEngine.extractUserFileKeys(JSON.stringify(content))) if (k.startsWith(`${from}/`)) keys.add(k);
+      }
+      for (const k of keys) {
+        const fileName = k.slice(from.length + 1);
+        const r = await this.moveUserFile(from, fileName, to, actorId).catch(() => null);
+        if (r) fileMoves.push({ oldUrl: r.oldUrl, newUrl: r.newUrl, chatIds: r.chatIds });
+      }
+    }
+
+    return { movedIds: ids, toProjectId: toProj, pageMoves, fileMoves };
+  }
+
+  /**
+   * Переносит файл в каталог другого пользователя (админ). Файл физически
+   * переезжает, адрес меняется на /api/files/serve/{новый владелец}/…, и
+   * все ссылки на него переписываются: в страницах (через savePageContent —
+   * со снимком истории) и в индексе использования; публичная ссылка /f/…
+   * продолжает работать. Чаты возвращаются вызывающему (их ведёт @core/chat).
+   */
+  async moveUserFile(
+    fromUserId: string,
+    fileName: string,
+    toUserId: string,
+    actorId: string,
+  ): Promise<{ file: UserFileInfo; oldUrl: string; newUrl: string; chatIds: string[] }> {
+    assertSafeId(fromUserId, 'userId');
+    assertSafeId(toUserId, 'userId');
+    const safeName = sanitizeFileName(fileName);
+    const src = await this.getUserFile(fromUserId, safeName);
+    if (!src) throw new FsEngineError(`File not found: ${safeName}`, 'NOT_FOUND');
+    if (fromUserId === toUserId) return { file: src, oldUrl: src.url, newUrl: src.url, chatIds: [] };
+    await this.getUser(toUserId); // NOT_FOUND, если такого пользователя нет
+
+    const targetDir = this.userFilesDir(toUserId);
+    await fs.mkdir(targetDir, { recursive: true });
+    const targetManifest = await this.readUserFilesManifest(toUserId);
+    let newName = safeName;
+    if (targetManifest[newName] || (await this.exists(joinSafe(targetDir, newName)))) {
+      newName = `${Date.now()}-${randomUUID().slice(0, 8)}${safeExtension(safeName)}`;
+    }
+
+    // 1. Файл и записи в манифестах.
+    let entry: UserFileManifestEntry | null = null;
+    await lockManager.run(this.userFilesManifestPath(fromUserId), async () => {
+      const m = await this.readUserFilesManifest(fromUserId);
+      entry = m[safeName] ?? null;
+      if (!entry) throw new FsEngineError(`File not found: ${safeName}`, 'NOT_FOUND');
+      await fs.rename(joinSafe(this.userFilesDir(fromUserId), safeName), joinSafe(targetDir, newName));
+      delete m[safeName];
+      await writeJsonAtomic(this.userFilesManifestPath(fromUserId), m);
+    });
+    const moved: UserFileManifestEntry = { ...entry!, sharedWith: (entry!.sharedWith ?? []).filter((id) => id !== toUserId) };
+    await lockManager.run(this.userFilesManifestPath(toUserId), async () => {
+      const m = await this.readUserFilesManifest(toUserId);
+      m[newName] = moved;
+      await writeJsonAtomic(this.userFilesManifestPath(toUserId), m);
+    });
+
+    // 2. Публичная ссылка — тот же токен, новый файл.
+    if (moved.publicToken) {
+      const t = moved.publicToken;
+      await this.updatePublicFileLinks((links) => {
+        links[t] = { ownerId: toUserId, fileName: newName };
+      });
+    }
+
+    const oldUrl = `/api/files/serve/${fromUserId}/${safeName}`;
+    const newUrl = `/api/files/serve/${toUserId}/${newName}`;
+
+    // 3. Аватар прежнего владельца больше не его файл.
+    const fromMeta = await this.getUser(fromUserId).catch(() => null);
+    if (fromMeta?.avatarUrl === oldUrl) await this.patchUserMeta(fromUserId, { avatarUrl: null });
+
+    // 4. Ссылки в страницах и индекс использования.
+    const refs = await this.getFileRefs(fromUserId, safeName);
+    const chatIds: string[] = [];
+    for (const ref of refs) {
+      if (ref.startsWith('page:')) {
+        const [owner, project, page] = ref.slice(5).split('/');
+        if (!owner || !project || !page) continue;
+        try {
+          const content = await this.getPageContent(owner, project, page);
+          const text = JSON.stringify(content);
+          if (text.includes(oldUrl)) {
+            await this.savePageContent(owner, project, page, JSON.parse(text.split(oldUrl).join(newUrl)) as PageContent, actorId);
+          }
+        } catch {
+          /* страница удалена — пропускаем */
+        }
+      } else if (ref.startsWith('chat:')) {
+        chatIds.push(ref.slice(5));
+      }
+    }
+    if (chatIds.length) {
+      const oldKey = `${fromUserId}/${safeName}`;
+      const newKey = `${toUserId}/${newName}`;
+      await this.updateFileRefs((idx) => {
+        const chatRefs = (idx.files[oldKey] ?? []).filter((r) => r.startsWith('chat:'));
+        idx.files[newKey] = [...new Set([...(idx.files[newKey] ?? []), ...chatRefs])];
+        idx.files[oldKey] = (idx.files[oldKey] ?? []).filter((r) => !r.startsWith('chat:'));
+        if (idx.files[oldKey]!.length === 0) delete idx.files[oldKey];
+      });
+    }
+
+    return { file: this.toUserFileInfo(toUserId, newName, moved), oldUrl, newUrl, chatIds };
+  }
+
+  // ---- Публичные ссылки на файлы (/f/{token}) -----------------------------
+  // Ссылка не раскрывает ни id владельца, ни имя файла на диске и
+  // отзывается удалением токена. Индекс token → файл: storageRoot/file-public-links.json.
+
+  private publicFileLinksPath(): string {
+    return joinSafe(this.root, 'file-public-links.json');
+  }
+
+  private async readPublicFileLinks(): Promise<Record<string, { ownerId: string; fileName: string }>> {
+    try {
+      return await readJson<Record<string, { ownerId: string; fileName: string }>>(this.publicFileLinksPath());
+    } catch (err) {
+      if (err instanceof FsEngineError && err.code === 'NOT_FOUND') return {};
+      throw err;
+    }
+  }
+
+  private async updatePublicFileLinks(fn: (links: Record<string, { ownerId: string; fileName: string }>) => void): Promise<void> {
+    const p = this.publicFileLinksPath();
+    await lockManager.run(p, async () => {
+      const links = await this.readPublicFileLinks();
+      fn(links);
+      await writeJsonAtomic(p, links);
+    });
+  }
+
+  /** Включает публичную ссылку (или возвращает существующую). */
+  async enableUserFilePublicLink(userId: string, fileName: string): Promise<UserFileInfo> {
+    const current = await this.getUserFile(userId, fileName);
+    if (!current) throw new FsEngineError(`File not found: ${fileName}`, 'NOT_FOUND');
+    if (current.publicToken) return current;
+    const token = randomBytes(18).toString('base64url');
+    await this.updatePublicFileLinks((links) => {
+      links[token] = { ownerId: userId, fileName };
+    });
+    return this.patchUserFile(userId, fileName, (e) => {
+      e.publicToken = token;
+    });
+  }
+
+  /** Отзывает публичную ссылку — старый адрес /f/{token} перестаёт работать. */
+  async disableUserFilePublicLink(userId: string, fileName: string): Promise<UserFileInfo> {
+    const current = await this.getUserFile(userId, fileName);
+    if (!current) throw new FsEngineError(`File not found: ${fileName}`, 'NOT_FOUND');
+    if (current.publicToken) {
+      const t = current.publicToken;
+      await this.updatePublicFileLinks((links) => void delete links[t]);
+    }
+    return this.patchUserFile(userId, fileName, (e) => {
+      e.publicToken = null;
+    });
+  }
+
+  /** Файл по токену публичной ссылки, или null (ссылка отозвана / файл удалён). */
+  async resolvePublicFileToken(token: string): Promise<UserFileInfo | null> {
+    if (!/^[A-Za-z0-9_-]{10,64}$/.test(token)) return null;
+    const link = (await this.readPublicFileLinks())[token];
+    if (!link) return null;
+    const file = await this.getUserFile(link.ownerId, link.fileName).catch(() => null);
+    return file && file.publicToken === token ? file : null;
+  }
+
+  /** Файлы других пользователей, к которым открыт доступ этому пользователю (лично или «всем сотрудникам»). */
+  async listFilesSharedWithUser(userId: string): Promise<UserFileInfo[]> {
+    const users = await this.listUsers();
+    const result: UserFileInfo[] = [];
+    for (const u of users) {
+      if (u.id === userId) continue;
+      const files = await this.listUserFiles(u.id).catch(() => []);
+      for (const f of files) if (f.sharedWith.includes(userId) || f.sharedWith.includes('*')) result.push(f);
+    }
+    return result.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+  }
+
+  // ---- Где используются файлы (страницы, чаты) ---------------------------
+  // Индекс storageRoot/file-refs.json: для каждого файла — где он вставлен
+  // (`page:…`/`chat:…`), и обратный — какие файлы в какой странице. По
+  // нему files.routes.ts решает, может ли человек открыть файл по прямой
+  // ссылке: картинка в расшаренной странице видна тем, кому открыта
+  // страница; вложение в чате — участникам чата; картинка в
+  // опубликованной странице — всем.
+
+  private fileRefsPath(): string {
+    return joinSafe(this.root, 'file-refs.json');
+  }
+
+  private async readFileRefs(): Promise<{ v: number; files: Record<string, FileRef[]>; pages: Record<string, string[]> } | null> {
+    try {
+      return await readJson(this.fileRefsPath());
+    } catch (err) {
+      if (err instanceof FsEngineError && err.code === 'NOT_FOUND') return null;
+      throw err;
+    }
+  }
+
+  private async updateFileRefs(fn: (idx: { v: number; files: Record<string, FileRef[]>; pages: Record<string, string[]> }) => void) {
+    const p = this.fileRefsPath();
+    await lockManager.run(p, async () => {
+      const idx = (await this.readFileRefs()) ?? { v: 1, files: {}, pages: {} };
+      fn(idx);
+      await writeJsonAtomic(p, idx);
+    });
+  }
+
+  /** Ключи файлов (`{userId}/{fileName}`), на которые есть ссылки в тексте/блоках. */
+  static extractUserFileKeys(text: string): string[] {
+    const keys = new Set<string>();
+    for (const m of text.matchAll(/\/api\/files\/serve\/([A-Za-z0-9_-]{1,128})\/([A-Za-z0-9._-]{1,255})/g)) keys.add(`${m[1]}/${m[2]}`);
+    return [...keys];
+  }
+
+  private static setPageRefs(
+    idx: { files: Record<string, FileRef[]>; pages: Record<string, string[]> },
+    pageKey: string,
+    fileKeys: string[],
+  ) {
+    const ref = `page:${pageKey}`;
+    for (const old of idx.pages[pageKey] ?? []) {
+      idx.files[old] = (idx.files[old] ?? []).filter((r) => r !== ref);
+      if (idx.files[old]!.length === 0) delete idx.files[old];
+    }
+    if (fileKeys.length) idx.pages[pageKey] = fileKeys;
+    else delete idx.pages[pageKey];
+    for (const k of fileKeys) idx.files[k] = [...new Set([...(idx.files[k] ?? []), ref])];
+  }
+
+  /** Обновляет индекс после сохранения содержимого страницы. */
+  async updatePageFileRefs(ownerId: string, projectId: string, pageId: string, content: PageContent): Promise<void> {
+    const keys = FsEngine.extractUserFileKeys(JSON.stringify(content.blocks ?? []));
+    await this.updateFileRefs((idx) => FsEngine.setPageRefs(idx, `${ownerId}/${projectId}/${pageId}`, keys));
+  }
+
+  /** Отмечает, что файл прикреплён к сообщению в чате. */
+  async addChatFileRef(chatId: string, url: string): Promise<void> {
+    const keys = FsEngine.extractUserFileKeys(url);
+    if (!keys.length) return;
+    await this.updateFileRefs((idx) => {
+      for (const k of keys) idx.files[k] = [...new Set([...(idx.files[k] ?? []), `chat:${chatId}`])];
+    });
+  }
+
+  /**
+   * Удаляет голосовые и кружки, записанные в чате, на которые больше нет
+   * ни одной ссылки (сообщения удалили до версии, где файл удалялся
+   * вместе с сообщением). Узнаём их по имени «Голосовое …» / «Кружок …» и
+   * типу audio/* или video/*. Возвращает число удалённых файлов.
+   */
+  async cleanupOrphanRecordings(chatAttachmentUrls: Set<string>): Promise<number> {
+    const refs = await this.readFileRefs();
+    if (!refs) return 0;
+    let removed = 0;
+    for (const userId of await this.allUserIds()) {
+      for (const f of await this.listUserFiles(userId).catch(() => [] as UserFileInfo[])) {
+        if (!/^(Голосовое|Кружок) \d{4}-\d{2}-\d{2} /.test(f.originalName)) continue;
+        if (!/^(audio|video)\//.test(f.mimeType)) continue;
+        // Ссылки на чаты в индексе могли остаться от старых удалений — сверяемся с самими сообщениями.
+        if (chatAttachmentUrls.has(f.url)) continue;
+        if ((refs.files[`${userId}/${f.fileName}`] ?? []).some((r) => !r.startsWith('chat:'))) continue;
+        await this.deleteUserFile(userId, f.fileName).catch(() => undefined);
+        await this.updateFileRefs((idx) => {
+          delete idx.files[`${userId}/${f.fileName}`];
+        });
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  /** Файл больше не прикреплён ни к одному сообщению этого чата. */
+  async removeChatFileRef(chatId: string, url: string): Promise<void> {
+    const keys = FsEngine.extractUserFileKeys(url);
+    if (!keys.length) return;
+    await this.updateFileRefs((idx) => {
+      for (const k of keys) {
+        const left = (idx.files[k] ?? []).filter((r) => r !== `chat:${chatId}`);
+        if (left.length) idx.files[k] = left;
+        else delete idx.files[k];
+      }
+    });
+  }
+
+  async getFileRefs(ownerId: string, fileName: string): Promise<FileRef[]> {
+    return (await this.readFileRefs())?.files[`${ownerId}/${fileName}`] ?? [];
+  }
+
+  /**
+   * Однократное построение индекса по всем существующим страницам и
+   * переданным вложениям чатов — при первом запуске версии, где индекс
+   * появился. Если индекс уже есть, ничего не делает.
+   */
+  async backfillFileRefs(chatAttachments: { chatId: string; url: string }[]): Promise<boolean> {
+    if (await this.readFileRefs()) return false;
+    const idx = { v: 1, files: {} as Record<string, FileRef[]>, pages: {} as Record<string, string[]> };
+    for (const u of await this.listUsers()) {
+      for (const project of await this.listProjects(u.id).catch(() => [])) {
+        const walk = async (nodes: PageNode[]) => {
+          for (const n of nodes) {
+            try {
+              const content = await this.getPageContent(u.id, project.id, n.id);
+              FsEngine.setPageRefs(idx, `${u.id}/${project.id}/${n.id}`, FsEngine.extractUserFileKeys(JSON.stringify(content.blocks ?? [])));
+            } catch {
+              /* страница без content.json — пропускаем */
+            }
+            await walk(n.children);
+          }
+        };
+        await walk(await this.listPages(u.id, project.id).catch(() => []));
+      }
+    }
+    for (const a of chatAttachments) {
+      for (const k of FsEngine.extractUserFileKeys(a.url)) idx.files[k] = [...new Set([...(idx.files[k] ?? []), `chat:${a.chatId}`])];
+    }
+    await lockManager.run(this.fileRefsPath(), () => writeJsonAtomic(this.fileRefsPath(), idx));
+    return true;
+  }
+
   // ---------------------------------------------------------------------
   // Search (naive content scan — production would delegate to Fuse/Lunr index)
   // ---------------------------------------------------------------------
+
+  /** Shared by `searchPages` (one project, full access assumed — the caller already owns it) and `searchVisiblePages` (every project the viewer can see, including others' shared pages) — one place deciding what "matches" means for both. */
+  private async pageMatchesQuery(ownerId: string, projectId: string, meta: PageMeta, needle: string): Promise<boolean> {
+    if (meta.title.toLowerCase().includes(needle)) return true;
+    try {
+      const content = await this.getPageContent(ownerId, projectId, meta.id);
+      const text = content.blocks.map((b) => stripHtmlForSearch(b.content)).join(' ').toLowerCase();
+      return text.includes(needle);
+    } catch {
+      return false; // unreadable content — doesn't count as a match, doesn't fail the whole search either
+    }
+  }
 
   async searchPages(ownerId: string, projectId: string, query: string): Promise<PageMeta[]> {
     const needle = query.trim().toLowerCase();
@@ -1201,19 +2083,78 @@ export class FsEngine {
 
     const matches: PageMeta[] = [];
     for (const meta of flat) {
-      if (meta.title.toLowerCase().includes(needle)) {
-        matches.push(meta);
-        continue;
-      }
-      try {
-        const content = await this.getPageContent(ownerId, projectId, meta.id);
-        const text = content.blocks.map((b) => b.content).join(' ').toLowerCase();
-        if (text.includes(needle)) matches.push(meta);
-      } catch {
-        // ignore unreadable content
-      }
+      if (await this.pageMatchesQuery(ownerId, projectId, meta, needle)) matches.push(meta);
     }
     return matches;
+  }
+
+  /**
+   * Same idea as `searchPages`, but across *every* page the viewer can
+   * actually see — their own (every one of their own projects, not
+   * just one) plus every other user's page that's been shared with them
+   * specifically or with everyone (`sharing` entry for the viewer's own
+   * id or `'*'`). Backs the "link to a document" picker's document-level
+   * search: with many documents, and the same term potentially explained
+   * in several of them, filtering *which* document to open by whether it
+   * actually contains the term is the whole point — a plain alphabetical
+   * list doesn't help find the right one.
+   *
+   * Traverses every other user's directory the same way
+   * `listSharedPages` already does (this is deliberately *not* built by
+   * calling that method and then filtering — reusing `pageMatchesQuery`
+   * per page here avoids fetching + reading page content for entries
+   * that don't even pass the sharing-grant check, which `listSharedPages`
+   * itself doesn't need to care about since it's just listing, not
+   * searching content).
+   */
+  async searchVisiblePages(viewerId: string, query: string): Promise<PageMeta[]> {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+
+    const results: PageMeta[] = [];
+
+    const ownProjects = await this.listProjects(viewerId).catch(() => []);
+    for (const project of ownProjects) {
+      results.push(...(await this.searchPages(viewerId, project.id, needle)));
+    }
+
+    {
+      for (const ownerId of await this.allUserIds()) {
+        if (ownerId === viewerId) continue; // already covered by the viewer's own projects above
+
+        let projects: ProjectMeta[];
+        try {
+          projects = await this.listProjects(ownerId);
+        } catch {
+          continue;
+        }
+
+        for (const project of projects) {
+          let tree: PageNode[];
+          try {
+            tree = await this.listPages(ownerId, project.id);
+          } catch {
+            continue;
+          }
+          const flat: PageNode[] = [];
+          const walk = (nodes: PageNode[]) => {
+            for (const n of nodes) {
+              flat.push(n);
+              walk(n.children);
+            }
+          };
+          walk(tree);
+
+          for (const page of flat) {
+            const grant = page.sharing.find((s) => s.userId === viewerId || s.userId === '*');
+            if (!grant) continue;
+            if (await this.pageMatchesQuery(ownerId, project.id, page, needle)) results.push(page);
+          }
+        }
+      }
+    }
+
+    return results.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   // ---------------------------------------------------------------------
@@ -1382,6 +2323,83 @@ export class FsEngine {
       );
       return node;
     });
+  }
+
+  // ---- Public inbox: submissions without a chosen site --------------------
+
+  private publicInboxPath(): string {
+    return joinSafe(this.root, 'public-inbox.json');
+  }
+
+  private async readPublicInbox(): Promise<PublicInboxItem[]> {
+    try {
+      const data = await readJson<{ items: PublicInboxItem[] }>(this.publicInboxPath());
+      return Array.isArray(data.items) ? data.items : [];
+    } catch (err) {
+      if (err instanceof FsEngineError && err.code === 'NOT_FOUND') return [];
+      throw err;
+    }
+  }
+
+  async listPublicInbox(): Promise<PublicInboxItem[]> {
+    const items = await this.readPublicInbox();
+    return items.sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
+  }
+
+  /** Подаёт страницу в общую очередь без раздела. Повторная подача той же страницы обновляет существующую заявку, а не плодит дубликаты. */
+  async submitPageToPublicInbox(input: { ownerId: string; projectId: string; pageId: string; submittedBy: string }): Promise<PublicInboxItem> {
+    const filePath = this.publicInboxPath();
+    return lockManager.run(filePath, async () => {
+      const items = await this.readPublicInbox();
+      const now = new Date().toISOString();
+      const idx = items.findIndex((i) => i.ownerId === input.ownerId && i.projectId === input.projectId && i.pageId === input.pageId);
+      let item: PublicInboxItem;
+      if (idx >= 0) {
+        item = { ...items[idx]!, submittedBy: input.submittedBy, submittedAt: now };
+        items[idx] = item;
+      } else {
+        item = { id: randomUUID(), ...input, submittedAt: now };
+        items.push(item);
+      }
+      await writeJsonAtomic(filePath, { items });
+      console.log(`[public-sites] inbox submit item=${item.id} page=${input.ownerId}/${input.projectId}/${input.pageId} by=${input.submittedBy}`);
+      return item;
+    });
+  }
+
+  async getPublicInboxItem(itemId: string): Promise<PublicInboxItem> {
+    const item = (await this.readPublicInbox()).find((i) => i.id === itemId);
+    if (!item) throw new FsEngineError(`Inbox item not found: ${itemId}`, 'NOT_FOUND');
+    return item;
+  }
+
+  async deletePublicInboxItem(itemId: string): Promise<void> {
+    const filePath = this.publicInboxPath();
+    await lockManager.run(filePath, async () => {
+      const items = await this.readPublicInbox();
+      await writeJsonAtomic(filePath, { items: items.filter((i) => i.id !== itemId) });
+      console.log(`[public-sites] inbox removed item=${itemId}`);
+    });
+  }
+
+  /**
+   * Модератор распределяет заявку из очереди в раздел: страница
+   * добавляется в дерево раздела сразу одобренной, заявка удаляется из
+   * очереди. Работает и для выключенных разделов.
+   */
+  async assignPublicInboxItem(itemId: string, siteId: string, moderatedBy: string): Promise<PublicNode> {
+    const item = await this.getPublicInboxItem(itemId);
+    const node = await this.submitPageToPublicSite(siteId, {
+      ownerId: item.ownerId,
+      projectId: item.projectId,
+      pageId: item.pageId,
+      parentId: null,
+      submittedBy: item.submittedBy,
+    });
+    const approved = await this.moderatePublicNode(siteId, node.id, { status: 'approved', moderatedBy });
+    await this.deletePublicInboxItem(itemId);
+    console.log(`[public-sites] inbox assigned item=${itemId} site=${siteId} node=${node.id} by=${moderatedBy}`);
+    return approved;
   }
 
   /** Withdraws a submission entirely (not just rejecting it) — for either the original submitter taking it back, or a moderator removing a page from consideration/the tree altogether. Also detaches any children still pointing at this node (promotes them to top-level in the public tree) rather than leaving them referencing a parentId that no longer exists. */

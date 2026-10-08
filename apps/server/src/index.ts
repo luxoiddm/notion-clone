@@ -10,6 +10,7 @@ import { initRealtime } from '@core/realtime';
 import { CallSignaling } from '@core/webrtc';
 import { createApp } from './app.js';
 import { seedAdminFromEnv } from './routes/auth.routes.js';
+import { detectLogoTone } from './lib/logoTone.js';
 
 // Load `.env` by a path resolved from THIS file's location, not from
 // process.cwd(). Various process managers / panels (PM2, Passenger,
@@ -118,6 +119,44 @@ async function main() {
   // Creates/verifies the first Admin from ADMIN_EMAIL/ADMIN_PASSWORD in
   // .env. Logs exactly what it did — check this line first if login fails.
   await seedAdminFromEnv(auth, fs);
+
+  // Однократно (при первом запуске версии с индексом) строим индекс
+  // «где используется файл» по всем страницам и вложениям чатов — по нему
+  // проверяется доступ к файлам по прямой ссылке.
+  try {
+    if (await fs.backfillFileRefs(await chat.listAllAttachments())) console.log('[startup] Построен индекс использования файлов (file-refs.json)');
+  } catch (err) {
+    console.warn('[startup] Не удалось построить индекс использования файлов:', err);
+  }
+
+  // Человекочитаемый список папок пользователей: STORAGE_ROOT/USERS.txt.
+  await fs
+    .cleanupOrphanRecordings(new Set((await chat.listAllAttachments()).map((a) => a.url)))
+    .then((n) => n && console.log(`[startup] Удалено голосовых/кружков без сообщений: ${n}`))
+    .catch((err) => console.warn('[startup] Не удалось почистить записи без сообщений:', err));
+  await fs.writeUsersIndex().catch((err) => console.warn('[startup] Не удалось записать USERS.txt:', err));
+
+  // Логотипы, загруженные до появления тёмной темы для логотипов, — один
+  // раз определяем их тон (тёмный/светлый), чтобы режим «Авто» работал сразу.
+  try {
+    const site = await fs.getSiteSettings();
+    const tone = { ...site.logoTone };
+    let changed = false;
+    for (const kind of ['login', 'header'] as const) {
+      const url = kind === 'login' ? site.loginLogoUrl : site.headerLogoUrl;
+      if (!url || tone[kind]) continue;
+      const data = await fs.readSiteLogo(kind);
+      if (!data) continue;
+      tone[kind] = await detectLogoTone(data);
+      changed = true;
+    }
+    if (changed) {
+      await fs.updateSiteSettings({ logoTone: tone });
+      console.log('[startup] Определён тон логотипов для тёмной темы:', tone);
+    }
+  } catch (err) {
+    console.warn('[startup] Не удалось определить тон логотипов:', err);
+  }
 
   // `io` needs an httpServer, and the Express `app` needs `io` (chatRoutes
   // emits `chat:message` through it) — so the app can't be built first and

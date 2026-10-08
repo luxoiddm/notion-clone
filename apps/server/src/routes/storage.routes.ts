@@ -4,6 +4,7 @@ import { AuthService, requireAuth, requireOwnStorageOrShared } from '@core/auth'
 import { FsEngine, FsEngineError, AccessLevel } from '@core/fs-engine';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { documentWriteLimiter, readLimiter } from '../middleware/rateLimiter.js';
+import { fixUploadName } from '../lib/uploadName.js';
 
 const upload = multer({ limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB per asset
 
@@ -140,11 +141,24 @@ export function storageRoutes(auth: AuthService, engine: FsEngine) {
         updated = await engine.updatePageTags(req.params.userId!, req.params.projectId!, req.params.pageId!, tags, req.user!.id);
       }
       if (parentId !== undefined || order !== undefined) {
+        // `null` — это осмысленное значение («перенести в корень»), поэтому
+        // сравниваем именно с undefined, а не через `??`: раньше
+        // `parentId ?? meta.parentId` превращал null в старого родителя, и
+        // вытащить вложенную страницу на верхний уровень было невозможно.
+        const nextParentId = parentId !== undefined ? parentId : meta.parentId;
+        // Нельзя вложить страницу в саму себя или в своего потомка — в
+        // дереве получился бы цикл, и ветка пропала бы из сайдбара.
+        for (let cur: string | null = nextParentId, guard = 0; cur && guard < 100; guard++) {
+          if (cur === req.params.pageId) {
+            return res.status(400).json({ error: 'Нельзя вложить страницу в саму себя или в дочернюю страницу' });
+          }
+          cur = (await engine.getPageMeta(req.params.userId!, req.params.projectId!, cur)).parentId;
+        }
         updated = await engine.movePage(
           req.params.userId!,
           req.params.projectId!,
           req.params.pageId!,
-          parentId ?? meta.parentId,
+          nextParentId,
           order ?? meta.order,
           req.user!.id,
         );
@@ -387,7 +401,7 @@ export function storageRoutes(auth: AuthService, engine: FsEngine) {
         req.params.userId!,
         req.params.projectId!,
         req.params.pageId!,
-        req.file.originalname,
+        fixUploadName(req.file.originalname),
         req.file.buffer,
         req.file.mimetype,
       );

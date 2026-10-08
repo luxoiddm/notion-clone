@@ -30,7 +30,7 @@ export function PageRefCard({ ownerId, projectId, pageId }: { ownerId: string; p
 
   if (state === 'denied') {
     return (
-      <div className="mt-1 flex items-center gap-2 rounded-md border border-line/10 bg-surface px-2.5 py-1.5 text-xs text-ink-faint">
+      <div className="mt-1 flex items-center gap-2 rounded-lg border border-line/[0.08] bg-surface-raised px-2.5 py-2 text-xs text-ink-faint">
         <Lock size={12} />
         Нет доступа к документу
       </div>
@@ -48,7 +48,7 @@ export function PageRefCard({ ownerId, projectId, pageId }: { ownerId: string; p
         openPage(ownerId, projectId, pageId);
         router.push('/');
       }}
-      className="mt-1 flex max-w-full items-center gap-2 rounded-md border border-line/10 bg-surface px-2.5 py-1.5 text-left text-xs hover:bg-surface-hover"
+      className="mt-1 flex max-w-full items-center gap-2 rounded-lg border border-line/[0.08] bg-surface-raised px-2.5 py-2 text-left text-xs shadow-xs transition-colors hover:border-accent/30 hover:bg-surface-hover"
     >
       <PageIconDisplay icon={state.icon} size={13} fallback={<FileText size={13} className="text-ink-faint" />} className="shrink-0" />
       <span className="truncate font-medium text-ink">{state.title}</span>

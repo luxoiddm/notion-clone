@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, Link2, Trash2, Globe, Check } from 'lucide-react';
-import { api, publicSitesApi, type PublicSite } from '../lib/api';
+import { X, Link2, Trash2, Check } from 'lucide-react';
+import { api } from '../lib/api';
 import type { PageMeta } from '../lib/types';
+import { Avatar } from './Avatar';
 
 type AccessLevel = 'read' | 'comment' | 'edit' | 'admin';
 
@@ -18,7 +19,7 @@ export function ShareDialog({
   ownerId,
   projectId,
   pageId,
-  sharing,
+  sharing: initialSharing,
   onClose,
   onChanged,
 }: {
@@ -29,50 +30,27 @@ export function ShareDialog({
   onClose: () => void;
   onChanged: (sharing: PageMeta['sharing']) => void;
 }) {
-  const [directory, setDirectory] = useState<{ id: string; displayName: string }[]>([]);
+  // Локальная копия — чтобы список доступа обновлялся сразу после
+  // сохранения, не дожидаясь перезагрузки метаданных страницы снаружи.
+  const [sharing, setSharing] = useState(initialSharing);
+  const [directory, setDirectory] = useState<{ id: string; displayName: string; avatarUrl: string | null; dismissed?: boolean }[]>([]);
+  const [copied, setCopied] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState('');
   const [level, setLevel] = useState<AccessLevel>('edit');
   const [isSaving, setIsSaving] = useState(false);
-
-  // "Публикация" section below — list of enabled public sites, each with
-  // its own submit button. Submitted this same session shows a checkmark
-  // (submittedIds); doesn't try to reflect any *prior* submission status
-  // from before this dialog opened — the backend's own resubmit-resets-
-  // to-pending behavior means clicking again is always the correct
-  // action regardless, so there's nothing lost by not tracking that here.
-  const [publicSites, setPublicSites] = useState<PublicSite[]>([]);
-  const [submittingId, setSubmittingId] = useState<string | null>(null);
-  const [submittedIds, setSubmittedIds] = useState<Set<string>>(new Set());
-  const [publishError, setPublishError] = useState<string | null>(null);
 
   useEffect(() => {
     api
       .listUsersDirectory()
       .then((users) => setDirectory(users.filter((u) => u.id !== ownerId)))
       .catch(() => setDirectory([]));
-    publicSitesApi
-      .list()
-      .then(setPublicSites)
-      .catch(() => setPublicSites([]));
   }, [ownerId]);
-
-  const submitToPublicSite = async (siteId: string) => {
-    setSubmittingId(siteId);
-    setPublishError(null);
-    try {
-      await publicSitesApi.submit(siteId, { ownerId, projectId, pageId, parentId: null });
-      setSubmittedIds((prev) => new Set(prev).add(siteId));
-    } catch (err) {
-      setPublishError(err instanceof Error ? err.message : 'Не удалось отправить на публикацию');
-    } finally {
-      setSubmittingId(null);
-    }
-  };
 
   const persist = async (next: PageMeta['sharing']) => {
     setIsSaving(true);
     try {
       const updated = await api.updateSharing(ownerId, projectId, pageId, next);
+      setSharing(updated.sharing);
       onChanged(updated.sharing);
     } finally {
       setIsSaving(false);
@@ -95,121 +73,128 @@ export function ShareDialog({
     void persist(sharing.filter((s) => s.userId !== userId));
   };
 
+  const changeLevel = (userId: string, nextLevel: AccessLevel) => {
+    void persist(sharing.map((s) => (s.userId === userId ? { ...s, level: nextLevel } : s)));
+  };
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* буфер обмена недоступен — молча игнорируем */
+    }
+  };
+
+  const linkGrant = sharing.find((s) => s.userId === '*');
+  const peopleGrants = sharing.filter((s) => s.userId !== '*');
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
-      <div
-        className="animate-popIn w-full max-w-md rounded-xl border border-line/10 bg-surface-panel p-5 shadow-panel"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink">Доступ к странице</h2>
-          <button type="button" onClick={onClose} className="rounded p-1 text-ink-muted hover:bg-surface-hover hover:text-ink">
+    <div className="dialog-overlay" onClick={onClose}>
+      <div className="dialog w-full max-w-[480px]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-4 px-6 pb-4 pt-5">
+          <div>
+            <h2 className="text-base font-semibold text-ink">Поделиться страницей</h2>
+            <p className="mt-0.5 text-xs text-ink-muted">Пригласите коллег и выберите уровень доступа.</p>
+          </div>
+          <button type="button" onClick={onClose} className="btn-icon -mr-2 -mt-1 h-7 w-7" aria-label="Закрыть">
             <X size={16} />
           </button>
         </div>
 
-        <div className="mb-4 space-y-2">
-          <select
-            value={selectedUserId}
-            onChange={(e) => setSelectedUserId(e.target.value)}
-            className="w-full rounded-md border border-line/10 bg-surface px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
-          >
-            <option value="">Выбрать пользователя...</option>
-            {directory
-              .filter((u) => !sharing.some((s) => s.userId === u.id))
-              .map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.displayName}
-                </option>
-              ))}
-          </select>
-          <div className="flex gap-2">
-            <select
-              value={level}
-              onChange={(e) => setLevel(e.target.value as AccessLevel)}
-              className="min-w-0 flex-1 rounded-md border border-line/10 bg-surface px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
-            >
-              {(Object.keys(LEVEL_LABEL) as AccessLevel[]).map((l) => (
-                <option key={l} value={l}>
-                  {LEVEL_LABEL[l]}
-                </option>
-              ))}
+        <div className="px-6">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)} className="input min-w-0 flex-1">
+              <option value="">Выберите коллегу…</option>
+              {directory
+                .filter((u) => !u.dismissed && !sharing.some((s) => s.userId === u.id))
+                .map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.displayName}
+                  </option>
+                ))}
             </select>
-            <button
-              type="button"
-              onClick={addGrant}
-              disabled={!selectedUserId || isSaving}
-              className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm text-white hover:opacity-90 disabled:opacity-50"
-            >
-              Дать доступ
-            </button>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={addLinkAccess}
-          disabled={isSaving}
-          className="mb-4 flex w-full items-center gap-2 rounded-md border border-dashed border-line/20 px-3 py-2 text-sm text-ink-muted hover:bg-surface-hover hover:text-ink"
-        >
-          <Link2 size={14} />
-          Разрешить всем по ссылке (только чтение)
-        </button>
-
-        <div className="space-y-1">
-          {sharing.length === 0 && <p className="text-sm text-ink-faint">Доступ пока никому не выдан.</p>}
-          {sharing.map((grant) => (
-            <div key={grant.userId} className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-surface-hover">
-              <span className="text-ink">
-                {grant.userId === '*' ? 'Все по ссылке' : directory.find((u) => u.id === grant.userId)?.displayName ?? grant.userId}
-                <span className="ml-2 text-xs text-ink-muted">{LEVEL_LABEL[grant.level]}</span>
-              </span>
-              <button type="button" onClick={() => removeGrant(grant.userId)} className="rounded p-1 text-ink-faint hover:bg-surface hover:text-red-500">
-                <Trash2 size={13} />
+            <div className="flex gap-2">
+              <select value={level} onChange={(e) => setLevel(e.target.value as AccessLevel)} className="input w-auto min-w-0 flex-1 sm:flex-none">
+                {(Object.keys(LEVEL_LABEL) as AccessLevel[]).map((l) => (
+                  <option key={l} value={l}>
+                    {LEVEL_LABEL[l]}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={addGrant} disabled={!selectedUserId || isSaving} className="btn-primary h-9">
+                Пригласить
               </button>
             </div>
-          ))}
+          </div>
         </div>
 
-        {publicSites.length > 0 && (
-          <div className="mt-4 border-t border-line/10 pt-4">
-            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">Публикация</p>
-            <p className="mb-2 text-xs text-ink-muted">
-              Страница появится по выбранному адресу после того, как модератор её рассмотрит и одобрит.
-            </p>
-            {publishError && <p className="mb-2 text-xs text-red-500">{publishError}</p>}
-            <div className="space-y-1">
-              {publicSites.map((site) => {
-                const isSubmitted = submittedIds.has(site.id);
-                return (
-                  <button
-                    key={site.id}
-                    type="button"
-                    onClick={() => !isSubmitted && void submitToPublicSite(site.id)}
-                    disabled={submittingId === site.id || isSubmitted}
-                    className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm ${
-                      isSubmitted ? 'text-ink-faint' : 'text-ink hover:bg-surface-hover'
-                    }`}
+        <div className="mt-5 px-6">
+          <p className="section-label mb-1.5 px-0">Есть доступ</p>
+          <div className="-mx-2 max-h-56 space-y-px overflow-y-auto">
+            {peopleGrants.length === 0 && <p className="px-2 py-3 text-sm text-ink-faint">Пока только вы.</p>}
+            {peopleGrants.map((grant) => {
+              const person = directory.find((u) => u.id === grant.userId);
+              const name = person?.displayName ?? grant.userId;
+              return (
+                <div key={grant.userId} className="group flex items-center gap-3 rounded-md px-2 py-1.5 hover:bg-surface-hover">
+                  <Avatar avatarUrl={person?.avatarUrl ?? null} displayName={name} size="sm" />
+                  <span className="min-w-0 flex-1 truncate text-sm text-ink">{name}</span>
+                  <select
+                    value={grant.level}
+                    onChange={(e) => changeLevel(grant.userId, e.target.value as AccessLevel)}
+                    disabled={isSaving}
+                    className="h-7 cursor-pointer rounded-md border-0 bg-transparent pr-1 text-xs text-ink-muted outline-none hover:text-ink"
                   >
-                    <span className="flex items-center gap-2">
-                      <Globe size={14} className="text-ink-muted" />
-                      {site.title}
-                      <span className="text-xs text-ink-faint">/{site.slug}</span>
-                    </span>
-                    {isSubmitted ? (
-                      <span className="flex items-center gap-1 text-xs text-green-600">
-                        <Check size={13} />
-                        Отправлено
-                      </span>
-                    ) : (
-                      <span className="text-xs text-ink-muted">{submittingId === site.id ? 'Отправка...' : 'Отправить в публикацию'}</span>
-                    )}
+                    {(Object.keys(LEVEL_LABEL) as AccessLevel[]).map((l) => (
+                      <option key={l} value={l}>
+                        {LEVEL_LABEL[l]}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => removeGrant(grant.userId)}
+                    title="Закрыть доступ"
+                    className="btn-icon-sm opacity-0 hover:text-danger group-hover:opacity-100"
+                  >
+                    <Trash2 size={13} />
                   </button>
-                );
-              })}
-            </div>
+                </div>
+              );
+            })}
           </div>
-        )}
+        </div>
+
+        <div className="mx-6 mt-4 flex items-center gap-3 rounded-lg border border-line/[0.08] bg-surface-panel px-3 py-2.5">
+          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${linkGrant ? 'bg-accent-soft text-accent-ink' : 'bg-surface-sunken text-ink-faint'}`}>
+            <Link2 size={15} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-ink">Доступ по ссылке</p>
+            <p className="text-xs text-ink-muted">{linkGrant ? 'Все сотрудники могут читать страницу' : 'Только приглашённые'}</p>
+          </div>
+          {linkGrant ? (
+            <button type="button" onClick={() => removeGrant('*')} disabled={isSaving} className="btn-ghost btn-sm">
+              Выключить
+            </button>
+          ) : (
+            <button type="button" onClick={addLinkAccess} disabled={isSaving} className="btn-secondary btn-sm">
+              Включить
+            </button>
+          )}
+        </div>
+
+        <div className="mt-6 flex items-center justify-between gap-3 border-t border-line/[0.06] bg-surface-panel/60 px-6 py-3">
+          <button type="button" onClick={() => void copyLink()} className="btn-ghost btn-sm -ml-2.5">
+            {copied ? <Check size={13} className="text-success" /> : <Link2 size={13} />}
+            {copied ? 'Скопировано' : 'Копировать ссылку'}
+          </button>
+          <button type="button" onClick={onClose} className="btn-secondary btn-sm">
+            Готово
+          </button>
+        </div>
       </div>
     </div>
   );

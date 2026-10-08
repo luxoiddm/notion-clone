@@ -34,11 +34,11 @@ export function TagEditor({
           {tags.map((tag) => (
             <span
               key={tag}
-              className="flex items-center gap-1 rounded-full border border-line/10 bg-surface px-2 py-0.5 text-xs text-ink-muted"
+              className="flex h-6 items-center gap-1 rounded-full bg-accent-soft px-2.5 text-xs font-medium text-accent-ink"
             >
               {tag}
               {!readOnly && (
-                <button type="button" onClick={() => removeTag(tag)} title="Убрать тег" className="text-ink-faint hover:text-red-500">
+                <button type="button" onClick={() => removeTag(tag)} title="Убрать тег" className="text-ink-faint hover:text-danger">
                   <X size={10} />
                 </button>
               )}
@@ -59,7 +59,7 @@ export function TagEditor({
           }}
           onBlur={addTag}
           placeholder="Добавить тег..."
-          className={`w-full rounded-md border border-line/10 bg-surface px-2 py-1 text-xs focus:border-accent focus:outline-none ${
+          className={`input h-8 text-xs ${
             tags.length > 0 ? 'mt-1.5' : ''
           }`}
         />

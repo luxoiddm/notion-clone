@@ -48,16 +48,15 @@ export async function refreshAccessToken(): Promise<string | null> {
 }
 
 /**
- * Appends the current access token as a `?token=` query param. Needed for
- * any URL the browser fetches on its own — `<img src>`, `<a href>` — since
- * those requests can't carry a custom Authorization header. The server's
- * requireAuth middleware accepts either form; see agent.md for the
- * tradeoff (short-lived token visible in the URL).
+ * Раньше добавлял `?token=<access token>` к адресам картинок и файлов —
+ * и такая ссылка, скопированная из адресной строки, открывалась у любого,
+ * даже в инкогнито. Теперь браузер авторизует их httpOnly-cookie
+ * `mediaToken` (её ставит сервер при входе и обновлении токена), так что
+ * адрес возвращается как есть. Оставлено ради одного места для
+ * будущих правок адресов медиа.
  */
 export function withAuthToken(url: string): string {
-  if (!accessToken) return url;
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}token=${encodeURIComponent(accessToken)}`;
+  return url;
 }
 
 async function request<T>(path: string, init?: RequestInit, isRetryAfterRefresh = false): Promise<T> {
@@ -191,7 +190,8 @@ export const api = {
   },
 
   // Minimal user directory (id + displayName), any authenticated user.
-  listUsersDirectory: () => request<{ id: string; displayName: string; avatarUrl: string | null; accentColor: string | null }[]>('/users'),
+  /** Справочник сотрудников. `dismissed` — уволен: имя показываем в старых чатах/документах, но в выборе коллег его нет. */
+  listUsersDirectory: () => request<{ id: string; displayName: string; avatarUrl: string | null; accentColor: string | null; dismissed?: boolean }[]>('/users'),
 
   updateOwnAccentColor: (accentColor: string | null) =>
     request<{ id: string; displayName: string; avatarUrl: string | null; accentColor: string | null }>('/users/me', {
@@ -208,6 +208,9 @@ export const api = {
   // Pages shared with the current user, across everyone else's workspace.
   listShared: () => request<PageNode[]>('/shared'),
 
+  /** Global search — own pages (every project) plus everything shared with the caller, filtered by title/content match server-side. See search.routes.ts / FsEngine.searchVisiblePages for why this needs its own top-level endpoint rather than reusing the per-project `search` above. */
+  searchGlobal: (q: string) => request<PageMeta[]>(`/search?q=${encodeURIComponent(q)}`),
+
   // Current caller's profile — used to restore a session after a hard
   // refresh, once a fresh access token has been obtained via /auth/refresh.
   me: () =>
@@ -223,7 +226,65 @@ export interface AdminUser {
   email: string | null;
   createdAt: string;
   enabled: boolean;
+  /** Уволен (папка в STORAGE_ROOT/dismissed/); null — действующий. */
+  dismissedAt?: string | null;
+  /** Папка на диске относительно STORAGE_ROOT: users/{id} или dismissed/{id}. */
+  folder?: string;
 }
+
+/** Строка таблицы файлового менеджера: пользователь и сколько места он занимает. */
+export interface StorageUserRow {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+  role: AdminUser['role'];
+  enabled: boolean;
+  dismissedAt: string | null;
+  email: string | null;
+  filesCount: number;
+  filesBytes: number;
+  pagesCount: number;
+  totalBytes: number;
+  folder: string;
+}
+
+export type AdminFile = UserFileInfo & { usage: { pages: number; chats: number } };
+
+export interface AdminPage {
+  projectId: string;
+  projectName: string;
+  id: string;
+  title: string;
+  icon: string | null;
+  path: string[];
+  updatedAt: string;
+  bytes: number;
+  /** Сколько файлов владельца вставлено в эту страницу. */
+  ownFiles: number;
+  /** Сколько вложенных страниц (всех уровней) переедет вместе с ней. */
+  children: number;
+}
+
+/** Файловый менеджер администратора (/api/admin/storage). */
+export const storageAdminApi = {
+  listUsers: () => request<StorageUserRow[]>('/admin/storage/users'),
+  listFiles: (userId: string) => request<AdminFile[]>(`/admin/storage/users/${userId}/files`),
+  deleteFile: (userId: string, fileName: string) =>
+    request<void>(`/admin/storage/users/${userId}/files/${encodeURIComponent(fileName)}`, { method: 'DELETE' }),
+  moveFile: (userId: string, fileName: string, toUserId: string) =>
+    request<UserFileInfo>(`/admin/storage/users/${userId}/files/${encodeURIComponent(fileName)}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ toUserId }),
+    }),
+  listPages: (userId: string) => request<AdminPage[]>(`/admin/storage/users/${userId}/pages`),
+  movePage: (userId: string, projectId: string, pageId: string, toUserId: string, withFiles: boolean) =>
+    request<{ movedPages: number; movedFiles: number; toProjectId: string }>(`/admin/storage/users/${userId}/pages/${projectId}/${pageId}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ toUserId, withFiles }),
+    }),
+  deletePage: (userId: string, projectId: string, pageId: string) =>
+    request<void>(`/admin/storage/users/${userId}/pages/${projectId}/${pageId}`, { method: 'DELETE' }),
+};
 
 export interface PublicSite {
   id: string;
@@ -283,7 +344,30 @@ export const moderationApi = {
 
   getNodeContent: (siteId: string, nodeId: string) =>
     request<{ title: string; icon: string | null; blocks: PageBlock[] }>(`/moderation/public-sites/${siteId}/nodes/${nodeId}/content`),
+
+  /** Заявки «без раздела» — модератор распределяет их по разделам. */
+  listInbox: () => request<EnrichedInboxItem[]>('/moderation/public-sites/inbox'),
+
+  getInboxContent: (itemId: string) =>
+    request<{ title: string; icon: string | null; blocks: PageBlock[] }>(`/moderation/public-sites/inbox/${itemId}/content`),
+
+  assignInboxItem: (itemId: string, siteId: string) =>
+    request<PublicNode>(`/moderation/public-sites/inbox/${itemId}/assign`, { method: 'POST', body: JSON.stringify({ siteId }) }),
+
+  deleteInboxItem: (itemId: string) => request<void>(`/moderation/public-sites/inbox/${itemId}`, { method: 'DELETE' }),
 };
+
+export interface EnrichedInboxItem {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  pageId: string;
+  submittedBy: string;
+  submittedAt: string;
+  pageTitle: string | null;
+  pageIcon: string | null;
+  pageMissing: boolean;
+}
 
 /** For any authenticated user submitting one of their own (or shared-with-edit) pages to a public site — distinct from moderationApi's own methods, which require Admin or Team-Lead. */
 export const publicSitesApi = {
@@ -291,6 +375,10 @@ export const publicSitesApi = {
 
   submit: (siteId: string, input: { ownerId: string; projectId: string; pageId: string; parentId?: string | null }) =>
     request<PublicNode>(`/public-sites/${siteId}/submit`, { method: 'POST', body: JSON.stringify(input) }),
+
+  /** Подать страницу без выбора раздела — модератор распределит её сам. */
+  submitToInbox: (input: { ownerId: string; projectId: string; pageId: string }) =>
+    request<{ id: string }>('/public-sites/inbox/submit', { method: 'POST', body: JSON.stringify(input) }),
 
   withdraw: (siteId: string, nodeId: string) => request<void>(`/public-sites/${siteId}/nodes/${nodeId}`, { method: 'DELETE' }),
 };
@@ -308,6 +396,9 @@ export const adminApi = {
     request<AdminUser>(`/admin/users/${userId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
   deleteUser: (userId: string) => request<void>(`/admin/users/${userId}`, { method: 'DELETE' }),
+  /** Уволить: папка → STORAGE_ROOT/dismissed/, вход запрещён, ссылки продолжают работать. */
+  dismissUser: (userId: string) => request<AdminUser>(`/admin/users/${userId}/dismiss`, { method: 'POST' }),
+  restoreUser: (userId: string) => request<AdminUser>(`/admin/users/${userId}/restore`, { method: 'POST' }),
 
   resetPassword: (userId: string) =>
     request<{ temporaryPassword: string }>(`/admin/users/${userId}/reset-password`, { method: 'POST' }),
@@ -326,10 +417,38 @@ export interface UserFileInfo {
   size: number;
   uploadedAt: string;
   url: string;
+  /** Владелец файла. */
+  ownerId: string;
+  /** Кому открыт доступ: id пользователей, '*' — всем сотрудникам. */
+  sharedWith: string[];
+  /** Токен публичной ссылки /f/{token}; null — ссылки нет. */
+  publicToken: string | null;
+}
+
+/** Полный адрес публичной ссылки на файл. */
+/** Ссылка на скачивание файла личного хранилища (сервер отдаёт как attachment). */
+export function fileDownloadUrl(url: string): string {
+  return `${url}${url.includes('?') ? '&' : '?'}download=1`;
+}
+
+export function publicFileUrl(token: string): string {
+  return `${window.location.origin}/f/${token}`;
 }
 
 export const filesApi = {
   list: () => request<UserFileInfo[]>('/files'),
+
+  /** Файлы коллег, к которым мне открыт доступ. */
+  listShared: () => request<UserFileInfo[]>('/files/shared'),
+
+  setSharing: (fileName: string, sharedWith: string[]) =>
+    request<UserFileInfo>(`/files/${encodeURIComponent(fileName)}/sharing`, { method: 'PUT', body: JSON.stringify({ sharedWith }) }),
+
+  enablePublicLink: (fileName: string) =>
+    request<UserFileInfo>(`/files/${encodeURIComponent(fileName)}/public-link`, { method: 'POST' }),
+
+  disablePublicLink: (fileName: string) =>
+    request<UserFileInfo>(`/files/${encodeURIComponent(fileName)}/public-link`, { method: 'DELETE' }),
 
   upload: async (file: File) => {
     const form = new FormData();
@@ -354,7 +473,37 @@ export interface ChatAttachment {
   fileName: string;
   mimeType: string;
   size: number;
+  /** Голосовое или видео-кружок, записанные в чате. */
+  kind?: 'voice' | 'round';
+  /** Секунды. */
+  duration?: number;
+  /** Форма волны голосового, 0..1. */
+  waveform?: number[];
 }
+
+export interface ChatGif {
+  url: string;
+  previewUrl: string;
+  width: number;
+  height: number;
+  title: string;
+  provider: 'klipy' | 'giphy';
+}
+
+export type GifProvider = 'klipy' | 'giphy';
+
+export interface GifItem extends ChatGif {
+  id: string;
+}
+
+/** Поиск GIF через сервер (ключ провайдера хранится только там). */
+export const gifsApi = {
+  status: () => request<{ enabled: boolean; provider: GifProvider | null; providers: GifProvider[] }>('/gifs/status'),
+  trending: (provider: GifProvider, page = 1) =>
+    request<{ items: GifItem[]; next: string | null }>(`/gifs/trending?provider=${provider}&page=${page}`),
+  search: (provider: GifProvider, q: string, page = 1) =>
+    request<{ items: GifItem[]; next: string | null }>(`/gifs/search?provider=${provider}&q=${encodeURIComponent(q)}&page=${page}`),
+};
 
 export interface ChatMessage {
   id: string;
@@ -364,6 +513,8 @@ export interface ChatMessage {
   text: string;
   pageRef: { ownerId: string; projectId: string; pageId: string } | null;
   attachment: ChatAttachment | null;
+  /** GIF из встроенного поиска (KLIPY/GIPHY) — только ссылки на CDN провайдера. */
+  gif?: ChatGif | null;
   createdAt: string;
   editedAt: string | null;
   deletedAt: string | null;
@@ -379,6 +530,10 @@ export interface ChatSummary {
   projectId: string | null;
   name: string | null;
   createdAt: string;
+  /** Создатель чата; `null` у старых чатов. */
+  createdBy?: string | null;
+  /** Кто вышел или был исключён — для подписи «покинул чат». */
+  leftMemberIds?: string[];
 }
 
 export interface ChatListItem extends ChatSummary {
@@ -422,7 +577,16 @@ export const chatApi = {
 
   getSummary: (chatId: string) => request<ChatSummary>(`/chats/${chatId}`),
 
+  /** Выйти из чата (удалить его у себя). У остальных участников чат остаётся; когда выходит последний — удаляется целиком. */
   deleteChat: (chatId: string) => request<void>(`/chats/${chatId}`, { method: 'DELETE' }),
+
+  /** Добавить участников (создатель чата или Admin/Team-Lead-участник). Личный чат становится групповым. */
+  addMembers: (chatId: string, userIds: string[]) =>
+    request<ChatSummary>(`/chats/${chatId}/members`, { method: 'POST', body: JSON.stringify({ userIds }) }),
+
+  /** Исключить участника (те же права) или выйти самому (userId = свой id). */
+  removeMember: (chatId: string, userId: string) =>
+    request<ChatSummary | null>(`/chats/${chatId}/members/${userId}`, { method: 'DELETE' }),
 
   getOrCreatePrivate: (otherUserId: string) =>
     request<ChatSummary>('/chats/private', { method: 'POST', body: JSON.stringify({ otherUserId }) }),
@@ -440,6 +604,7 @@ export const chatApi = {
       threadRootId?: string | null;
       pageRef?: { ownerId: string; projectId: string; pageId: string } | null;
       attachment?: ChatAttachment | null;
+      gif?: ChatGif | null;
     },
   ) => request<ChatMessage>(`/chats/${chatId}/messages`, { method: 'POST', body: JSON.stringify(input) }),
 
@@ -472,6 +637,17 @@ export interface SiteSettings {
   copyrightText: string;
   loginLogoUrl: string | null;
   headerLogoUrl: string | null;
+  /** Фоновое фото экрана входа, null — без фото. */
+  loginBackgroundUrl: string | null;
+  /** Свой favicon; null — стандартная иконка. */
+  faviconUrl: string | null;
+  /** Отдельные логотипы для тёмной темы; null — основной (с учётом darkLogoMode). */
+  loginLogoDarkUrl: string | null;
+  headerLogoDarkUrl: string | null;
+  /** Основной логотип в тёмной теме без отдельной версии: auto — инвертировать тёмный, invert — всегда, none — как есть. */
+  darkLogoMode: DarkLogoMode;
+  /** Тон основных логотипов (считает сервер при загрузке). */
+  logoTone: Partial<Record<'login' | 'header', 'dark' | 'light'>>;
   updatedAt: string;
   /** Deployed app version, from apps/server/package.json — read-only, not settable via updateSettings(). */
   version: string;
@@ -482,10 +658,10 @@ export const siteApi = {
   // logged in yet, e.g. the login screen itself). See site.routes.ts.
   get: () => request<SiteSettings>('/site-settings'),
 
-  updateSettings: (patch: Partial<Pick<SiteSettings, 'siteName' | 'siteDescription' | 'copyrightText'>>) =>
+  updateSettings: (patch: Partial<Pick<SiteSettings, 'siteName' | 'siteDescription' | 'copyrightText' | 'darkLogoMode'>>) =>
     request<SiteSettings>('/admin/site-settings', { method: 'PATCH', body: JSON.stringify(patch) }),
 
-  uploadLogo: async (kind: 'login' | 'header', file: File) => {
+  uploadLogo: async (kind: SiteImageKind, file: File) => {
     const form = new FormData();
     form.append('logo', file);
     const res = await fetch(`/api/admin/site-settings/logo/${kind}`, {
@@ -500,6 +676,33 @@ export const siteApi = {
     }
     return res.json() as Promise<SiteSettings>;
   },
+
+  /** Загрузить favicon: PNG/JPG/WebP/SVG (лучше квадрат от 512px) или готовый .ico. */
+  uploadFavicon: async (file: File) => {
+    const form = new FormData();
+    form.append('favicon', file);
+    const res = await fetch('/api/admin/site-settings/favicon', {
+      method: 'POST',
+      credentials: 'include',
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+      body: form,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(body.error ?? 'Upload failed', res.status);
+    }
+    return res.json() as Promise<SiteSettings>;
+  },
+
+  /** Вернуть стандартный favicon. */
+  deleteFavicon: () => request<SiteSettings>('/admin/site-settings/favicon', { method: 'DELETE' }),
+
+  /** Убрать логотип или фон экрана входа («без логотипа»). */
+  deleteLogo: (kind: SiteImageKind) => request<SiteSettings>(`/admin/site-settings/logo/${kind}`, { method: 'DELETE' }),
 };
+
+/** 'login' / 'header' — логотипы, 'login-bg' — фоновое фото экрана входа. */
+export type SiteImageKind = 'login' | 'header' | 'login-bg' | 'login-dark' | 'header-dark';
+export type DarkLogoMode = 'auto' | 'invert' | 'none';
 
 export { ApiError };

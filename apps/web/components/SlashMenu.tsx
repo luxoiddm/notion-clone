@@ -12,6 +12,7 @@ import {
   Pilcrow,
   Image as ImageIcon,
   Paperclip,
+  Sigma,
   type LucideIcon,
 } from 'lucide-react';
 import type { PageBlockType } from '../lib/types';
@@ -34,6 +35,7 @@ export const SLASH_OPTIONS: SlashOption[] = [
   { type: 'code', label: 'Код', icon: Code, keywords: 'code код' },
   { type: 'callout', label: 'Callout', icon: MessageSquareQuote, keywords: 'callout note заметка' },
   { type: 'table', label: 'Таблица', icon: Table, keywords: 'table таблица' },
+  { type: 'formula', label: 'Формула', icon: Sigma, keywords: 'formula latex katex math формула уравнение латех' },
   { type: 'image', label: 'Изображение', icon: ImageIcon, keywords: 'image photo картинка фото изображение' },
   { type: 'file', label: 'Файл', icon: Paperclip, keywords: 'file attachment файл вложение' },
   { type: 'divider', label: 'Разделитель', icon: Minus, keywords: 'divider line разделитель' },
@@ -71,7 +73,7 @@ export function SlashMenu({
 
   return (
     <div
-      className="animate-popIn fixed z-50 w-64 overflow-hidden rounded-lg border border-line/10 bg-surface-panel shadow-panel"
+      className="popover fixed z-50 w-72 overflow-hidden p-0"
       style={{ top: position.top, left: position.left }}
     >
       <div className="max-h-72 overflow-y-auto p-1">
@@ -86,11 +88,11 @@ export function SlashMenu({
                 onPick(opt.type);
               }}
               className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm ${
-                i === activeIndex ? 'bg-accent-soft text-ink' : 'text-ink-muted hover:bg-surface-hover hover:text-ink'
+                i === activeIndex ? 'bg-surface-hover text-ink' : 'text-ink-muted hover:bg-surface-hover hover:text-ink'
               }`}
             >
-              <span className="flex h-7 w-7 items-center justify-center rounded-md border border-line/10 bg-surface">
-                <Icon size={14} />
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line/[0.08] bg-surface-raised text-ink-muted shadow-xs">
+                <Icon size={15} />
               </span>
               {opt.label}
             </button>

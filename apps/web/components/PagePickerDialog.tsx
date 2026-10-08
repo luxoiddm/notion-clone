@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { X, FileText } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { X, FileText, Search } from 'lucide-react';
 import { api } from '../lib/api';
-import type { PageNode } from '../lib/types';
+import type { PageMeta, PageNode } from '../lib/types';
 import { PageIconDisplay } from './PageIconDisplay';
 
 export interface AttachedPageRef {
@@ -59,26 +59,99 @@ export function PagePickerDialog({
     })();
   }, [currentUserId]);
 
+  // Global search — separate from the plain own/shared lists above,
+  // queried server-side (FsEngine.searchVisiblePages) rather than
+  // filtering `ownPages`/`sharedPages` client-side, since with many
+  // documents the term being searched for might live in a document's
+  // *content*, not just its title, and that content isn't loaded here
+  // at all (only titles/icons are, for the plain list). Debounced by
+  // hand (setTimeout + a cancellation flag) rather than firing a request
+  // per keystroke — this is a real network round-trip that scans every
+  // visible document's content server-side, not a free client-side
+  // filter like the block-search in the next step of this same flow.
+  const [query, setQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<PageMeta[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    searchInputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setSearchResults(null);
+      setIsSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setIsSearching(true);
+    const timeout = setTimeout(() => {
+      api
+        .searchGlobal(trimmed)
+        .then((results) => {
+          if (!cancelled) setSearchResults(results);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setError(err instanceof Error ? err.message : 'Не удалось выполнить поиск');
+          setSearchResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setIsSearching(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [query]);
+
   const isLoading = ownPages === null || sharedPages === null;
   const hasAny = (ownPages?.length ?? 0) + (sharedPages?.length ?? 0) > 0;
+  const isSearchActive = query.trim().length > 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
+    <div className="dialog-overlay" onClick={onClose}>
       <div
-        className="animate-popIn flex max-h-[70vh] w-full max-w-sm flex-col rounded-xl border border-line/10 bg-surface-panel p-5 shadow-panel"
+        className="dialog flex max-h-[70vh] w-full max-w-sm flex-col p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink">Прикрепить страницу</h2>
-          <button type="button" onClick={onClose} className="rounded p-1 text-ink-muted hover:bg-surface-hover hover:text-ink">
+          <button type="button" onClick={onClose} className="btn-icon h-7 w-7">
             <X size={16} />
           </button>
         </div>
 
-        {error && <p className="mb-3 text-sm text-red-500">{error}</p>}
+        <div className="relative mb-3 shrink-0">
+          <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" />
+          <input
+            ref={searchInputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Поиск по всем документам (заголовок и текст)..."
+            className="input pl-8"
+          />
+        </div>
+
+        {error && <p className="mb-3 shrink-0 text-sm text-danger">{error}</p>}
 
         <div className="flex-1 space-y-3 overflow-y-auto">
-          {isLoading ? (
+          {isSearchActive ? (
+            isSearching && searchResults === null ? (
+              <p className="py-6 text-center text-sm text-ink-muted">Поиск...</p>
+            ) : !searchResults || searchResults.length === 0 ? (
+              <p className="py-6 text-center text-sm text-ink-faint">Ничего не найдено по «{query.trim()}».</p>
+            ) : (
+              <div>
+                {searchResults.map((page) => (
+                  <PagePickerRow key={`${page.ownerId}:${page.projectId}:${page.id}`} page={page} onPick={onPick} />
+                ))}
+              </div>
+            )
+          ) : isLoading ? (
             <p className="py-6 text-center text-sm text-ink-muted">Загрузка...</p>
           ) : !hasAny ? (
             <p className="py-6 text-center text-sm text-ink-faint">Нет доступных страниц.</p>
@@ -108,7 +181,7 @@ export function PagePickerDialog({
   );
 }
 
-function PagePickerRow({ page, onPick }: { page: PageNode; onPick: (p: AttachedPageRef) => void }) {
+function PagePickerRow({ page, onPick }: { page: PageMeta; onPick: (p: AttachedPageRef) => void }) {
   return (
     <button
       type="button"

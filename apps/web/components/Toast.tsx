@@ -33,11 +33,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           <div
             key={t.id}
             className={clsx(
-              'animate-popIn pointer-events-auto flex items-center gap-2 rounded-lg border border-line/10 bg-surface-panel px-3 py-2 text-sm shadow-panel',
-              t.kind === 'error' && 'text-red-500',
+              'animate-popIn pointer-events-auto flex items-center gap-2.5 rounded-lg bg-surface-raised px-3.5 py-2.5 text-sm shadow-pop',
+              t.kind === 'error' && 'text-danger',
             )}
           >
-            {t.kind === 'success' && <Check size={14} className="text-emerald-500" />}
+            {t.kind === 'success' && <Check size={14} className="text-success" />}
             {t.kind === 'error' && <AlertCircle size={14} />}
             {t.kind === 'info' && <Info size={14} className="text-accent" />}
             <span className="text-ink">{t.message}</span>
