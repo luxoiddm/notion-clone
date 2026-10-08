@@ -441,7 +441,7 @@ Keep a Changelog, в раздел `[Unreleased]` наверху файла. Не
 (`apps/web/lib/sanitize.ts`) перед `updateBlock(...)`. Это allowlist по
 тегам, а не blocklist — новый разрешённый тег добавляй в
 `ALLOWED_TAGS`, а не ослабляй проверку иначе. Помни, что это
-client-side-only защита (см. README «Известные ограничения»); при
+client-side-only защита (см. DEVELOPERS.md «Известные ограничения»); при
 переносе на сервер — дублируй ту же проверку в
 `FsEngine.savePageContent`, а не полагайся только на клиент.
 

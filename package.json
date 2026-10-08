@@ -1,7 +1,7 @@
 {
   "name": "notion-clone",
   "private": true,
-  "version": "1.51.2",
+  "version": "1.51.3",
   "license": "Apache-2.0",
   "workspaces": [
     "apps/*",
