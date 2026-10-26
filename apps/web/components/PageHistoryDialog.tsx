@@ -76,6 +76,7 @@ function BlockPreview({ block, numberedListIndex }: { block: PageBlock; numbered
 
   if (block.type === 'divider') return <hr className="my-3 border-line/10" />;
   if (block.type === 'image') return <p className="mb-2 text-xs text-ink-faint">[Изображение{block.fileName ? `: ${block.fileName}` : ''}]</p>;
+  if (block.type === 'task') return <p className="mb-2 text-xs text-ink-faint">[Задача{block.fileName ? `: ${block.fileName}` : ''}]</p>;
   if (block.type === 'file') return <p className="mb-2 text-xs text-ink-faint">[Файл{block.fileName ? `: ${block.fileName}` : ''}]</p>;
   // Falls outside the generic dangerouslySetInnerHTML path below on
   // purpose — block.content here is a raw LaTeX string, not HTML like

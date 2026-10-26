@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { MessageCircle, Copy, Pencil, Trash2, Download } from 'lucide-react';
+import { MessageCircle, Copy, Pencil, Trash2, Download, SquareCheckBig } from 'lucide-react';
 import { type ChatMessage, fileDownloadUrl } from '../lib/api';
 import { formatDuration } from '../lib/mediaRecorder';
 
@@ -33,6 +33,7 @@ export function MessageActionSheet({
   onEdit,
   onDelete,
   onCopied,
+  onMakeTask,
   onClose,
 }: {
   message: ChatMessage;
@@ -44,6 +45,8 @@ export function MessageActionSheet({
   onEdit?: () => void;
   onDelete?: () => void;
   onCopied: () => void;
+  /** «Сделать задачей» — создать задачу из этого сообщения. */
+  onMakeTask?: () => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -97,6 +100,12 @@ export function MessageActionSheet({
           <button type="button" role="menuitem" onClick={run(onThread)} className={item}>
             <MessageCircle size={18} className="text-ink-muted" />
             Ответить в теме
+          </button>
+        )}
+        {onMakeTask && (
+          <button type="button" role="menuitem" onClick={run(onMakeTask)} className={item}>
+            <SquareCheckBig size={18} className="text-ink-muted" />
+            Сделать задачей
           </button>
         )}
         {message.text && (

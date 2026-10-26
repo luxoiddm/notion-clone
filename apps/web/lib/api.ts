@@ -706,3 +706,133 @@ export type SiteImageKind = 'login' | 'header' | 'login-bg' | 'login-dark' | 'he
 export type DarkLogoMode = 'auto' | 'invert' | 'none';
 
 export { ApiError };
+
+// ------------------------------------------------------------------ Задачи
+
+export type TaskStatus = 'new' | 'in_progress' | 'review' | 'done' | 'postponed' | 'canceled';
+
+export interface TaskProject {
+  id: string;
+  key: string;
+  name: string;
+  color: string;
+  memberIds: string[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskSubtask {
+  id: string;
+  title: string;
+  done: boolean;
+  assigneeId: string | null;
+  dueDate: string | null;
+}
+
+export interface TaskPageRef {
+  ownerId: string;
+  projectId: string;
+  pageId: string;
+  title: string;
+  /** Документ открыт участникам задачи (ставит сервер: привязал владелец документа). */
+  shared?: boolean;
+}
+
+/** Кто видит задачи: 'own' — только свои (участник задачи), 'project' — все задачи своих проектов. */
+export type TaskVisibility = 'own' | 'project';
+
+export interface Task {
+  id: string;
+  projectId: string;
+  number: number;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  authorId: string;
+  assigneeId: string | null;
+  acceptance: 'pending' | 'accepted' | 'declined';
+  declineReason: string | null;
+  coAssigneeIds: string[];
+  watcherIds: string[];
+  startDate: string | null;
+  dueDate: string | null;
+  deadline: string | null;
+  dependsOn: string[];
+  subtasks: TaskSubtask[];
+  pageRefs: TaskPageRef[];
+  source: { chatId: string; messageId: string } | null;
+  order: number;
+  reminders: string[];
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  /** Закрытая карточка чужой задачи, связанной с вашей зависимостью: только номер, статус и даты. */
+  hidden?: boolean;
+}
+
+export interface TaskActivity {
+  id: string;
+  taskId: string;
+  authorId: string;
+  kind: 'comment' | 'event';
+  text: string;
+  event: { type: string; from?: string | null; to?: string | null } | null;
+  attachment: ChatAttachment | null;
+  createdAt: string;
+  editedAt: string | null;
+}
+
+export type TaskInput = Partial<
+  Pick<
+    Task,
+    | 'title'
+    | 'description'
+    | 'status'
+    | 'assigneeId'
+    | 'coAssigneeIds'
+    | 'watcherIds'
+    | 'startDate'
+    | 'dueDate'
+    | 'deadline'
+    | 'dependsOn'
+    | 'subtasks'
+    | 'pageRefs'
+    | 'order'
+    | 'source'
+  >
+> & { reason?: string; shiftChain?: boolean; /** Открыть уже привязанные документы участникам задачи. */ shareRefs?: TaskPageRef[] };
+
+export type TaskAction = 'accept' | 'decline' | 'submit' | 'approve' | 'return' | 'reopen';
+
+export const tasksApi = {
+  overview: () =>
+    request<{ projects: TaskProject[]; tasks: Task[]; hidden: Task[]; today: string; visibility: TaskVisibility }>('/tasks/overview'),
+  settings: () => request<{ visibility: TaskVisibility }>('/tasks/settings'),
+  updateSettings: (input: { visibility: TaskVisibility }) => request<{ visibility: TaskVisibility }>('/tasks/settings', { method: 'PATCH', body: JSON.stringify(input) }),
+  createProject: (input: { name: string; color?: string; memberIds?: string[]; key?: string }) =>
+    request<TaskProject>('/tasks/projects', { method: 'POST', body: JSON.stringify(input) }),
+  updateProject: (projectId: string, input: { name?: string; color?: string; memberIds?: string[] }) =>
+    request<TaskProject>(`/tasks/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteProject: (projectId: string) => request<void>(`/tasks/projects/${projectId}`, { method: 'DELETE' }),
+  get: (projectId: string, taskId: string) =>
+    request<{ task: Task; project: TaskProject; activity: TaskActivity[] }>(`/tasks/projects/${projectId}/tasks/${taskId}`),
+  create: (projectId: string, input: TaskInput) =>
+    request<Task>(`/tasks/projects/${projectId}/tasks`, { method: 'POST', body: JSON.stringify(input) }),
+  update: (projectId: string, taskId: string, input: TaskInput) =>
+    request<{ task: Task; shifted: Task[]; submittedInstead: boolean }>(`/tasks/projects/${projectId}/tasks/${taskId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  action: (projectId: string, taskId: string, action: TaskAction, extra: { reason?: string; dueDate?: string | null } = {}) =>
+    request<Task>(`/tasks/projects/${projectId}/tasks/${taskId}/actions`, { method: 'POST', body: JSON.stringify({ action, ...extra }) }),
+  remove: (projectId: string, taskId: string) => request<void>(`/tasks/projects/${projectId}/tasks/${taskId}`, { method: 'DELETE' }),
+  comment: (projectId: string, taskId: string, input: { text: string; mentionIds?: string[]; attachment?: ChatAttachment | null }) =>
+    request<TaskActivity>(`/tasks/projects/${projectId}/tasks/${taskId}/comments`, { method: 'POST', body: JSON.stringify(input) }),
+  editComment: (projectId: string, taskId: string, commentId: string, text: string) =>
+    request<TaskActivity>(`/tasks/projects/${projectId}/tasks/${taskId}/comments/${commentId}`, { method: 'PATCH', body: JSON.stringify({ text }) }),
+  deleteComment: (projectId: string, taskId: string, commentId: string) =>
+    request<void>(`/tasks/projects/${projectId}/tasks/${taskId}/comments/${commentId}`, { method: 'DELETE' }),
+  icalUrl: () => request<{ url: string }>('/tasks/ical'),
+  rotateIcal: () => request<{ url: string }>('/tasks/ical/rotate', { method: 'POST' }),
+};

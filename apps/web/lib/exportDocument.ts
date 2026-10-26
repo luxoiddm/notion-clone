@@ -44,6 +44,8 @@ function blockToMarkdown(block: PageBlock): string {
       return `![${block.fileName ?? ''}](${resolveAssetUrl(block.content)})`;
     case 'file':
       return `[${block.fileName ?? 'Файл'}](${resolveAssetUrl(block.content)})`;
+    case 'task':
+      return `- [ ] **Задача:** ${block.fileName ?? ''}`;
     case 'paragraph':
     case 'table': // no real table UI exists yet (see SlashMenu/Editor) — content is plain paragraph HTML, treated the same
     default:
@@ -78,6 +80,10 @@ export function documentToPlainText(title: string, blocks: PageBlock[]): string 
     }
     if (block.type === 'image' || block.type === 'file') {
       lines.push(`[${block.fileName ?? 'файл'}] ${resolveAssetUrl(block.content)}`, '');
+      continue;
+    }
+    if (block.type === 'task') {
+      lines.push(`[задача] ${block.fileName ?? ''}`, '');
       continue;
     }
     if (block.type === 'formula') {

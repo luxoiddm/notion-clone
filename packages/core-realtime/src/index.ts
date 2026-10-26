@@ -53,6 +53,41 @@ interface ServerToClientEvents {
    * приходят через 'chat:message' в комнату открытого чата).
    */
   'chat:notify': (payload: ChatNotifyPayload) => void;
+  /** Задача создана или изменена — участникам проекта (в личные комнаты). */
+  'task:updated': (payload: { projectId: string; task: unknown }) => void;
+  'task:deleted': (payload: { projectId: string; taskId: string }) => void;
+  /** Новый комментарий или событие в ленте задачи. */
+  'task:activity': (payload: { projectId: string; taskId: string; item: unknown }) => void;
+  /** Уведомление конкретному человеку: поручили, сдали на проверку, можно начинать, дедлайн… */
+  'task:notify': (payload: TaskNotifyPayload) => void;
+  /** Список проектов задач или их состав изменился. */
+  'tasks:projects-changed': (payload: { projectId: string }) => void;
+}
+
+export interface TaskNotifyPayload {
+  kind:
+    | 'assigned'
+    | 'co-assigned'
+    | 'accepted'
+    | 'declined'
+    | 'submitted'
+    | 'approved'
+    | 'returned'
+    | 'unblocked'
+    | 'mention'
+    | 'comment'
+    | 'due-changed'
+    | 'deadline-soon'
+    | 'deadline-today'
+    | 'overdue';
+  projectId: string;
+  taskId: string;
+  /** ПЕР-12 */
+  key: string;
+  title: string;
+  byId: string | null;
+  byName: string | null;
+  text?: string;
 }
 
 export interface ChatNotifyPayload {
@@ -276,4 +311,33 @@ export function removeUserFromChatRoom(io: RealtimeServer, userId: string, chatI
 
 export function emitChatThreadCountUpdated(io: RealtimeServer, chatId: string, threadRootId: string, replyCount: number): void {
   io.to(chatRoomKey(chatId)).emit('chat:thread-count-updated', { chatId, threadRootId, replyCount });
+}
+
+// ---------------------------------------------------------------- задачи
+
+function toUsers(io: RealtimeServer, userIds: Iterable<string>) {
+  let target: ReturnType<RealtimeServer['to']> | null = null;
+  for (const uid of new Set(userIds)) target = target ? target.to(personalRoomKey(uid)) : io.to(personalRoomKey(uid));
+  return target;
+}
+
+export function emitTaskUpdated(io: RealtimeServer, userIds: Iterable<string>, projectId: string, task: unknown): void {
+  toUsers(io, userIds)?.emit('task:updated', { projectId, task });
+}
+
+export function emitTaskDeleted(io: RealtimeServer, userIds: Iterable<string>, projectId: string, taskId: string): void {
+  toUsers(io, userIds)?.emit('task:deleted', { projectId, taskId });
+}
+
+export function emitTaskActivity(io: RealtimeServer, userIds: Iterable<string>, projectId: string, taskId: string, item: unknown): void {
+  toUsers(io, userIds)?.emit('task:activity', { projectId, taskId, item });
+}
+
+export function emitTaskNotify(io: RealtimeServer, userIds: Iterable<string>, payload: TaskNotifyPayload): void {
+  const ids = [...new Set(userIds)].filter((id) => id !== payload.byId);
+  if (ids.length) toUsers(io, ids)?.emit('task:notify', payload);
+}
+
+export function emitTaskProjectsChanged(io: RealtimeServer, userIds: Iterable<string>, projectId: string): void {
+  toUsers(io, userIds)?.emit('tasks:projects-changed', { projectId });
 }

@@ -7,6 +7,8 @@ import { asyncRoute } from '../middleware/errorHandler.js';
 import { documentWriteLimiter, readLimiter } from '../middleware/rateLimiter.js';
 import { hasAccess } from './storage.routes.js';
 import { fixUploadName } from '../lib/uploadName.js';
+import { canSeeTask, seesAllTasks } from '../lib/taskVisibility.js';
+import type { Role } from '@core/auth';
 
 const upload = multer({ limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB per file, same cap as page assets
 
@@ -106,6 +108,19 @@ async function canReadUserFile(
     } else if (ref.startsWith('chat:') && user) {
       const summary = await chat.getChatSummary(ref.slice(5)).catch(() => null);
       if (summary?.memberIds.includes(user.id)) return true;
+    } else if (ref.startsWith('task:') && user) {
+      // task:{projectId}:{taskId} — файл из обсуждения задачи: видит тот, кто видит задачу.
+      // Старые task:{projectId} (до 1.55.0) — только те, кто видит все задачи проекта.
+      const [projectId, taskId] = ref.slice(5).split(':');
+      const project = projectId ? await engine.tasks.getProject(projectId).catch(() => null) : null;
+      if (project) {
+        const viewer = { id: user.id, role: (user.role ?? 'Guest') as Role };
+        const vis = (await engine.tasks.getSettings()).visibility;
+        if (taskId) {
+          const task = await engine.tasks.getTask(project.id, taskId).catch(() => null);
+          if (task && canSeeTask(project, task, viewer, vis)) return true;
+        } else if (project.memberIds.includes(user.id) && seesAllTasks(project, viewer, vis)) return true;
+      }
     }
   }
   return false;

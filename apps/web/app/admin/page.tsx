@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, Plus, Trash2, KeyRound, Mail, Pencil, Check, X, ShieldCheck, Users, Palette, Search, UserPlus, HardDrive, UserX, RotateCcw } from 'lucide-react';
+import { Loader2, Plus, Trash2, KeyRound, Mail, Pencil, Check, X, ShieldCheck, Users, Palette, Search, UserPlus, HardDrive, UserX, RotateCcw, SquareCheckBig } from 'lucide-react';
 import { AdminStorage } from '../../components/AdminStorage';
+import { AdminTaskSettings } from '../../components/AdminTaskSettings';
 import { useSession } from '../../components/SessionProvider';
 import { adminApi, type AdminUser } from '../../lib/api';
 import { useToast, ToastProvider } from '../../components/Toast';
@@ -85,7 +86,7 @@ function AdminPanel() {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [credentialModal, setCredentialModal] = useState<{ title: string; label: string; value: string } | null>(null);
-  const [tab, setTab] = useState<'users' | 'storage' | 'site'>('users');
+  const [tab, setTab] = useState<'users' | 'storage' | 'tasks' | 'site'>('users');
   const [panel, setPanel] = useState<'create' | 'invite' | null>(null);
   const [query, setQuery] = useState('');
 
@@ -126,11 +127,12 @@ function AdminPanel() {
       description="Пользователи, приглашения и брендинг рабочего пространства."
       width="wide"
     >
-      <div className="mb-6 flex gap-1 border-b border-line/[0.07]">
+      <div className="mb-6 flex gap-1 overflow-x-auto border-b border-line/[0.07]">
         {(
           [
             ['users', 'Пользователи', Users],
             ['storage', 'Файлы', HardDrive],
+            ['tasks', 'Задачи', SquareCheckBig],
             ['site', 'Настройки сайта', Palette],
           ] as const
         ).map(([key, label, Icon]) => (
@@ -138,7 +140,7 @@ function AdminPanel() {
             key={key}
             type="button"
             onClick={() => setTab(key)}
-            className={`-mb-px flex items-center gap-2 border-b-2 px-3 pb-2.5 pt-1 text-sm font-medium transition-colors ${
+            className={`-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3 pb-2.5 pt-1 text-sm font-medium transition-colors ${
               tab === key ? 'border-accent text-ink' : 'border-transparent text-ink-muted hover:text-ink'
             }`}
           >
@@ -150,6 +152,8 @@ function AdminPanel() {
 
       {tab === 'site' ? (
         <SiteSettingsForm />
+      ) : tab === 'tasks' ? (
+        <AdminTaskSettings onNotify={notify} />
       ) : tab === 'storage' ? (
         <AdminStorage currentUserId={user.id} onNotify={notify} />
       ) : (

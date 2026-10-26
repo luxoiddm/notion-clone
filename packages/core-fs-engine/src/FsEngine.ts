@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { assertSafeId, joinSafe, sanitizeFileName, sanitizeDisplayFileName, safeExtension } from './pathSafety.js';
 import { lockManager } from './lockManager.js';
+import { TaskStore } from './TaskStore.js';
 import {
   AssetInfo,
   Comment,
@@ -164,9 +165,12 @@ export class FsEngine {
   private readonly tileSheetCols: number;
   private readonly tileSheetRows: number;
   private readonly tileSize: number;
+  /** Раздел «Задачи» — проекты, задачи, обсуждения (STORAGE_ROOT/tasks). */
+  readonly tasks: TaskStore;
 
   constructor(options: FsEngineOptions) {
     this.root = path.resolve(options.storageRoot);
+    this.tasks = new TaskStore(this.root);
     this.maxHistorySnapshots = options.maxHistorySnapshots ?? DEFAULT_MAX_SNAPSHOTS;
     this.tileSheetCols = options.tileSheetCols ?? DEFAULT_TILE_SHEET_COLS;
     this.tileSheetRows = options.tileSheetRows ?? DEFAULT_TILE_SHEET_ROWS;
@@ -1045,6 +1049,31 @@ export class FsEngine {
       const metaPath = joinSafe(dir, 'meta.json');
       const meta = await readPageMeta(metaPath);
       const updated: PageMeta = { ...meta, sharing, updatedAt: new Date().toISOString(), updatedBy: authorId };
+      await writeJsonAtomic(metaPath, updated);
+      return updated;
+    });
+  }
+
+  /**
+   * Read-modify-write of a page's sharing list under the page lock — for
+   * server-side grants (task participants) that must not race with the
+   * owner editing sharing at the same moment. Authorization is the
+   * caller's job, as for `updatePageSharing`.
+   */
+  async mutatePageSharing(
+    ownerId: string,
+    projectId: string,
+    pageId: string,
+    fn: (sharing: PageMeta['sharing']) => PageMeta['sharing'] | null,
+    authorId: string,
+  ): Promise<PageMeta> {
+    const dir = this.pageDir(ownerId, projectId, pageId);
+    return lockManager.run(dir, async () => {
+      const metaPath = joinSafe(dir, 'meta.json');
+      const meta = await readPageMeta(metaPath);
+      const next = fn(meta.sharing.map((s) => ({ ...s })));
+      if (!next) return meta;
+      const updated: PageMeta = { ...meta, sharing: next, updatedAt: new Date().toISOString(), updatedBy: authorId };
       await writeJsonAtomic(metaPath, updated);
       return updated;
     });
@@ -2013,6 +2042,19 @@ export class FsEngine {
         if (left.length) idx.files[k] = left;
         else delete idx.files[k];
       }
+    });
+  }
+
+  /**
+   * Файл прикреплён к обсуждению задачи — его видят те, кто видит задачу
+   * (ссылка `task:{projectId}:{taskId}`; старые `task:{projectId}` —
+   * только те, кто видит все задачи проекта).
+   */
+  async addTaskFileRef(taskProjectId: string, url: string, taskId: string): Promise<void> {
+    const keys = FsEngine.extractUserFileKeys(url);
+    if (!keys.length) return;
+    await this.updateFileRefs((idx) => {
+      for (const k of keys) idx.files[k] = [...new Set([...(idx.files[k] ?? []), `task:${taskProjectId}:${taskId}`])];
     });
   }
 

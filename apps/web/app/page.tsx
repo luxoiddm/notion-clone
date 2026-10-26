@@ -435,6 +435,11 @@ function Workspace() {
                 onOpenPageRef={openPageRef}
                 scrollToBlockId={scrollToBlockId}
                 onScrolledToBlock={() => setScrollToBlockId(null)}
+                pageRef={
+                  activeOwnerId && activeProjectId && activePageId
+                    ? { ownerId: activeOwnerId, projectId: activeProjectId, pageId: activePageId, title: doc.meta?.title ?? '' }
+                    : undefined
+                }
               />
             )}
             {activePageId && !doc.isLoading && activeOwnerId && activeProjectId && user && (

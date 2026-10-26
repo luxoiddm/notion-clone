@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
-import { FileText, MessageSquare, FolderOpen, Users, Globe, ShieldCheck, Settings, LogOut, ChevronsUpDown, Sun, Moon, Monitor } from 'lucide-react';
+import { FileText, MessageSquare, FolderOpen, Users, Globe, ShieldCheck, Settings, LogOut, ChevronsUpDown, Sun, Moon, Monitor, SquareCheckBig } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useSession } from './SessionProvider';
+import { useTaskBadge } from '../lib/tasks';
 import { Avatar } from './Avatar';
 import { useSiteSettings, logoUrlWithCacheBust, HEADER_LOGO_HEIGHT, SiteLogo } from './SiteSettingsProvider';
 
@@ -63,6 +64,7 @@ interface NavLink {
 const NAV_LINKS: NavLink[] = [
   { href: '/', label: 'Документы', icon: FileText, match: (p) => p === '/' },
   { href: '/chat', label: 'Сообщения', icon: MessageSquare, match: (p) => p.startsWith('/chat') },
+  { href: '/tasks', label: 'Задачи', icon: SquareCheckBig, match: (p) => p.startsWith('/tasks') },
   { href: '/files', label: 'Файлы', icon: FolderOpen, match: (p) => p.startsWith('/files') },
   { href: '/shared', label: 'Доступные мне', icon: Users, match: (p) => p.startsWith('/shared') },
   {
@@ -78,8 +80,9 @@ const NAV_LINKS: NavLink[] = [
 /** Основные разделы приложения. `onNavigate` — закрыть мобильный drawer после перехода. */
 export function PrimaryNav({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname() ?? '/';
-  const { user } = useSession();
+  const { user, accessToken } = useSession();
   const role = user?.role ?? 'Guest';
+  const tasksBadge = useTaskBadge(accessToken, user?.id ?? null);
 
   return (
     <nav className="space-y-px">
@@ -89,6 +92,9 @@ export function PrimaryNav({ onNavigate }: { onNavigate?: () => void }) {
           <Link key={href} href={href} onClick={onNavigate} className={clsx('nav-item', active && 'nav-item-active')}>
             <Icon size={16} strokeWidth={active ? 2.1 : 1.8} className={clsx('shrink-0', active ? 'text-accent' : 'text-ink-faint')} />
             <span className="truncate">{label}</span>
+            {href === '/tasks' && tasksBadge > 0 && (
+              <span className="ml-auto rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-[18px] text-white">{tasksBadge > 99 ? '99+' : tasksBadge}</span>
+            )}
           </Link>
         );
       })}

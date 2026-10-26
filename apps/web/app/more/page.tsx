@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import clsx from 'clsx';
 import { useTheme } from 'next-themes';
-import { ChevronRight, Users, Globe, ShieldCheck, Settings, Bell, LogOut, Sun, Moon, Monitor } from 'lucide-react';
+import { ChevronRight, Users, Globe, ShieldCheck, Settings, Bell, LogOut, Sun, Moon, Monitor, FolderOpen } from 'lucide-react';
 import { useSession } from '../../components/SessionProvider';
 import { useSiteSettings } from '../../components/SiteSettingsProvider';
 import { AppShell, FullScreenLoader, SignInRequired } from '../../components/AppShell';
@@ -64,6 +64,7 @@ export default function MorePage() {
         </Link>
 
         <div className="card overflow-hidden">
+          <Row href="/files" icon={<FolderOpen size={17} />} color="#D97706" label="Файлы" />
           <Row href="/shared" icon={<Users size={17} />} color="#0284C7" label="Доступные мне" />
           {canModerate && <Row href="/moderation" icon={<Globe size={17} />} color="#15803D" label="Публикация" />}
           {user.role === 'Admin' && <Row href="/admin" icon={<ShieldCheck size={17} />} color="#3F3F46" label="Администрирование" />}

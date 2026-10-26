@@ -19,6 +19,7 @@ import { webrtcRoutes } from './routes/webrtc.routes.js';
 import { siteRoutes } from './routes/site.routes.js';
 import { tileSetsRoutes } from './routes/tileSets.routes.js';
 import { moderationPublicSitesRoutes, publicSitesSubmitRoutes, publicSitesReadRoutes } from './routes/publicSites.routes.js';
+import { tasksRoutes, tasksIcalRoutes } from './routes/tasks.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 export interface AppDeps {
@@ -52,6 +53,9 @@ export function createApp({ auth, fs, chat, io, webOrigin, version }: AppDeps) {
   app.use('/api/admin', adminRoutes(auth, fs));
   app.use('/api/storage', storageRoutes(auth, fs));
   app.use('/api/chats', chatRoutes(auth, chat, io, fs));
+  app.use('/api/tasks', tasksRoutes(auth, fs, io, webOrigin));
+  // Лента календаря по секретной ссылке — без входа (календарные программы не умеют авторизоваться).
+  app.use('/api/tasks-ical', tasksIcalRoutes(fs, webOrigin));
   app.use('/api/gifs', gifsRoutes(auth));
   app.use('/api/users', usersRoutes(auth, fs));
   app.use('/api/shared', sharedRoutes(auth, fs));

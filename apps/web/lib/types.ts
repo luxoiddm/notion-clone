@@ -12,7 +12,8 @@ export type PageBlockType =
   | 'image'
   | 'file'
   | 'divider'
-  | 'formula';
+  | 'formula'
+  | 'task';
 
 export interface PageBlock {
   id: string;

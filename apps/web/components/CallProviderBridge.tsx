@@ -4,6 +4,7 @@ import { useSession } from './SessionProvider';
 import { CallProvider } from './CallProvider';
 import { IncomingCallBanner } from './IncomingCallBanner';
 import { SoundNotifier } from './SoundNotifier';
+import { TaskNotifier } from './tasks/TaskNotifier';
 
 export function CallProviderBridge({ children }: { children: React.ReactNode }) {
   const { accessToken, user } = useSession();
@@ -12,6 +13,7 @@ export function CallProviderBridge({ children }: { children: React.ReactNode }) 
       {children}
       <IncomingCallBanner />
       <SoundNotifier accessToken={accessToken} currentUserId={user?.id ?? null} />
+      <TaskNotifier accessToken={accessToken} currentUserId={user?.id ?? null} />
     </CallProvider>
   );
 }

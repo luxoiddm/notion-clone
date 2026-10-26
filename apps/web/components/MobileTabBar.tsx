@@ -4,18 +4,20 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
-import { FileText, MessageSquare, FolderOpen, MoreHorizontal } from 'lucide-react';
+import { FileText, MessageSquare, SquareCheckBig, MoreHorizontal } from 'lucide-react';
+import { useSession } from './SessionProvider';
+import { useTaskBadge } from '../lib/tasks';
 import { getUnread, onUnreadChange, totalUnread } from '../lib/unread';
 
 const TABS = [
   { href: '/', label: 'Документы', icon: FileText, match: (p: string) => p === '/' },
   { href: '/chat', label: 'Чаты', icon: MessageSquare, match: (p: string) => p.startsWith('/chat') },
-  { href: '/files', label: 'Файлы', icon: FolderOpen, match: (p: string) => p.startsWith('/files') },
+  { href: '/tasks', label: 'Задачи', icon: SquareCheckBig, match: (p: string) => p.startsWith('/tasks') },
   {
     href: '/more',
     label: 'Ещё',
     icon: MoreHorizontal,
-    match: (p: string) => ['/more', '/shared', '/moderation', '/admin', '/settings'].some((x) => p.startsWith(x)),
+    match: (p: string) => ['/more', '/files', '/shared', '/moderation', '/admin', '/settings'].some((x) => p.startsWith(x)),
   },
 ] as const;
 
@@ -36,6 +38,8 @@ export function useUnreadTotal(): number {
 export function MobileTabBar() {
   const pathname = usePathname() ?? '/';
   const unread = useUnreadTotal();
+  const { accessToken, user } = useSession();
+  const tasksBadge = useTaskBadge(accessToken, user?.id ?? null);
 
   return (
     <nav
@@ -57,6 +61,11 @@ export function MobileTabBar() {
           >
             <Icon size={22} strokeWidth={active ? 2.1 : 1.8} />
             {label}
+            {href === '/tasks' && tasksBadge > 0 && (
+              <span className="absolute left-1/2 top-1.5 ml-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-danger px-1 text-[11px] font-semibold leading-none text-white">
+                {tasksBadge > 99 ? '99+' : tasksBadge}
+              </span>
+            )}
             {href === '/chat' && unread > 0 && (
               <span className="absolute left-1/2 top-1.5 ml-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-danger px-1 text-[11px] font-semibold leading-none text-white">
                 {unread > 99 ? '99+' : unread}

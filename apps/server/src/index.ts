@@ -9,6 +9,7 @@ import { ChatEngine } from '@core/chat';
 import { initRealtime } from '@core/realtime';
 import { CallSignaling } from '@core/webrtc';
 import { createApp } from './app.js';
+import { startTaskReminders } from './routes/tasks.routes.js';
 import { seedAdminFromEnv } from './routes/auth.routes.js';
 import { detectLogoTone } from './lib/logoTone.js';
 
@@ -208,6 +209,8 @@ async function main() {
 
   const app = createApp({ auth, fs, chat, io, webOrigin: WEB_ORIGIN, version: APP_VERSION });
   httpServer.on('request', app);
+  // Напоминания о дедлайнах задач (за 2 дня, в день, просрочка).
+  startTaskReminders(fs, io);
 
   httpServer.listen(PORT, () => {
     console.log(`[startup] Сервер слушает http://localhost:${PORT}`);

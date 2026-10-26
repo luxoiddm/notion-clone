@@ -46,7 +46,9 @@ export function PageRefCard({ ownerId, projectId, pageId }: { ownerId: string; p
       type="button"
       onClick={() => {
         openPage(ownerId, projectId, pageId);
-        router.push('/');
+        // Адрес документа, а не просто «/»: главная при открытии берёт
+        // документ из адреса, и без параметров показывала список страниц.
+        router.push(`/?owner=${encodeURIComponent(ownerId)}&project=${encodeURIComponent(projectId)}&page=${encodeURIComponent(pageId)}`);
       }}
       className="mt-1 flex max-w-full items-center gap-2 rounded-lg border border-line/[0.08] bg-surface-raised px-2.5 py-2 text-left text-xs shadow-xs transition-colors hover:border-accent/30 hover:bg-surface-hover"
     >

@@ -17,7 +17,7 @@ import type { AttachedPageRef } from './PagePickerDialog';
  * below).
  */
 function isLinkableBlock(block: PageBlock): boolean {
-  if (block.type === 'divider' || block.type === 'image' || block.type === 'file') return false;
+  if (block.type === 'divider' || block.type === 'image' || block.type === 'file' || block.type === 'task') return false;
   return blockPreviewText(block).trim().length > 0;
 }
 

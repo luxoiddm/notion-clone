@@ -30,7 +30,19 @@ part of the system (API routes, sockets, chat) calls through here.
   /chats
     /private/{chatId}.jsonl
     /group/{chatId}.jsonl
+  /tasks                            # TaskStore (engine.tasks)
+    projects.json                   # TaskProject[] — key, name, color, memberIds
+    ical-tokens.json                # userId -> secret token for /api/tasks-ical/{token}.ics
+    settings.json                   # TaskSettings — visibility: 'own' | 'project' (admin)
+    page-grants.json                # TaskPageGrant[] — page access granted to task participants (to revoke later)
+    /{projectId}/
+      tasks.json                    # { v, seq, tasks: Task[] } — seq feeds KEY-N numbers
+      /activity/{taskId}.jsonl      # TaskActivity — comments + events, append-only
 ```
+
+Task attachments (comment files, voice, round video) stay in the
+uploader's personal `files/`; `file-refs.json` gets a `task:{projectId}`
+ref so project members can open them.
 
 IDs (`userID`, `projectID`, `pageID`) are always server-generated UUIDs or
 admin-assigned slugs matching `^[a-zA-Z0-9_-]{1,128}$` — never raw user

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Send, Loader2, MessageCircle, ChevronDown, ChevronUp, Paperclip, Upload, X, Pencil, Trash2, SmilePlus, FileSymlink, Smile } from 'lucide-react';
+import { Send, Loader2, MessageCircle, ChevronDown, ChevronUp, Paperclip, Upload, X, Pencil, Trash2, SmilePlus, FileSymlink, Smile, SquareCheckBig } from 'lucide-react';
 import { EmojiPicker } from './EmojiPicker';
 import { GifPicker, useGifStatus } from './GifPicker';
 import { chatApi, filesApi, type ChatMessage, type ChatSummary, type ChatAttachment, type UserFileInfo, type GifItem } from '../lib/api';
@@ -14,6 +14,9 @@ import { PageRefCard } from './PageRefCard';
 import { FilePickerDialog } from './FilePickerDialog';
 import { ChatAttachmentView } from './ChatAttachmentView';
 import { MediaRecordButton } from './MediaRecordButton';
+import { NewTaskDialog, type NewTaskPrefill } from './tasks/TaskDialogs';
+import { useTasks } from '../lib/tasks';
+import { useRouter } from 'next/navigation';
 import { MessageActionSheet } from './MessageActionSheet';
 import { canRecord, type RecordingResult } from '../lib/mediaRecorder';
 import { Avatar } from './Avatar';
@@ -21,6 +24,20 @@ import { useToast } from './Toast';
 
 const TYPING_DEBOUNCE_MS = 2000;
 const TYPING_STALE_MS = 3000;
+
+/** Черновик задачи из сообщения: первая строка — название, всё сообщение — описание. */
+function messageToTask(m: ChatMessage, author: string, chatId: string): NewTaskPrefill {
+  const plain = m.text.replace(/[*_`~>#]/g, '').trim();
+  const firstLine = plain.split('\n').find((l) => l.trim()) ?? '';
+  const fallback = m.attachment ? (m.attachment.kind === 'voice' ? 'Голосовое из чата' : m.attachment.kind === 'round' ? 'Кружок из чата' : m.attachment.fileName) : 'Задача из чата';
+  const when = new Date(m.createdAt).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  return {
+    title: (firstLine || fallback).slice(0, 140),
+    description: `${m.text ? `${m.text}\n\n` : ''}— ${author}, ${when}, из чата`,
+    source: { chatId, messageId: m.id },
+    pageRefs: m.pageRef ? [{ ...m.pageRef, title: '' }] : undefined,
+  };
+}
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -160,6 +177,9 @@ export function ChatWindow({
   const [threadReplies, setThreadReplies] = useState<ChatMessage[]>([]);
   const [replyCounts, setReplyCounts] = useState<Map<string, number>>(new Map());
   const [threadComposerText, setThreadComposerText] = useState('');
+  const [taskFrom, setTaskFrom] = useState<ChatMessage | null>(null);
+  const tasksData = useTasks(taskFrom ? accessToken : null);
+  const router = useRouter();
 
   const listRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -552,6 +572,7 @@ export function ChatWindow({
               onDelete={() => void handleDeleteMessage(msg.id)}
               currentUserId={currentUserId}
               onToggleReaction={(emoji) => void handleToggleReaction(msg.id, emoji)}
+              onMakeTask={() => setTaskFrom(msg)}
             />
           ))
         )}
@@ -586,6 +607,7 @@ export function ChatWindow({
                   onDelete={() => void handleDeleteMessage(reply.id)}
                   currentUserId={currentUserId}
                   onToggleReaction={(emoji) => void handleToggleReaction(reply.id, emoji)}
+                  onMakeTask={() => setTaskFrom(reply)}
                   compact
                 />
               ))
@@ -719,6 +741,20 @@ export function ChatWindow({
         />
       )}
 
+      {taskFrom && tasksData.loaded && (
+        <NewTaskDialog
+          projects={tasksData.projects}
+          people={tasksData.people}
+          meId={currentUserId}
+          prefill={messageToTask(taskFrom, usersById.get(taskFrom.authorId)?.displayName ?? 'Коллега', chat.id)}
+          onClose={() => setTaskFrom(null)}
+          onCreated={(t) => {
+            setTaskFrom(null);
+            push('Задача создана');
+            router.push(`/tasks?project=${t.projectId}&task=${t.id}`);
+          }}
+        />
+      )}
       {filePickerOpen && (
         <FilePickerDialog
           onClose={() => setFilePickerOpen(false)}
@@ -747,6 +783,7 @@ function MessageRow({
   onDelete,
   currentUserId,
   onToggleReaction,
+  onMakeTask,
   compact = false,
 }: {
   message: ChatMessage;
@@ -763,6 +800,7 @@ function MessageRow({
   onDelete: () => void;
   currentUserId: string;
   onToggleReaction: (emoji: string) => void;
+  onMakeTask?: () => void;
   compact?: boolean;
 }) {
   const [draft, setDraft] = useState(message.text);
@@ -875,6 +913,7 @@ function MessageRow({
           onEdit={onStartEdit}
           onDelete={onDelete}
           onCopied={() => pushToast('Текст скопирован', 'success')}
+          onMakeTask={onMakeTask}
           onClose={() => setMenuOpen(false)}
         />
       )}
@@ -985,6 +1024,11 @@ function MessageRow({
                 </div>
               )}
             </div>
+            {onMakeTask && (
+              <button type="button" onClick={onMakeTask} title="Сделать задачей" className="rounded p-1 hover:bg-surface-hover hover:text-ink">
+                <SquareCheckBig size={11} />
+              </button>
+            )}
             {isMine && (
               <>
                 {message.text && (

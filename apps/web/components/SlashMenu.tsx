@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   Paperclip,
   Sigma,
+  SquareCheckBig,
   type LucideIcon,
 } from 'lucide-react';
 import type { PageBlockType } from '../lib/types';
@@ -38,6 +39,7 @@ export const SLASH_OPTIONS: SlashOption[] = [
   { type: 'formula', label: 'Формула', icon: Sigma, keywords: 'formula latex katex math формула уравнение латех' },
   { type: 'image', label: 'Изображение', icon: ImageIcon, keywords: 'image photo картинка фото изображение' },
   { type: 'file', label: 'Файл', icon: Paperclip, keywords: 'file attachment файл вложение' },
+  { type: 'task', label: 'Задача', icon: SquareCheckBig, keywords: 'task задача поручение' },
   { type: 'divider', label: 'Разделитель', icon: Minus, keywords: 'divider line разделитель' },
 ];
 
@@ -53,7 +55,10 @@ export const SLASH_OPTIONS: SlashOption[] = [
  */
 export function filterSlashOptions(query: string): SlashOption[] {
   const q = query.toLowerCase();
-  return SLASH_OPTIONS.filter((o) => o.keywords.includes(q) || o.label.toLowerCase().includes(q));
+  const hits = SLASH_OPTIONS.filter((o) => o.keywords.includes(q) || o.label.toLowerCase().includes(q));
+  // Совпадение с началом названия — выше: «/задача» → «Задача», а не «Чек-лист».
+  const starts = (o: SlashOption) => (q && o.label.toLowerCase().startsWith(q) ? 0 : 1);
+  return hits.map((o, i) => ({ o, i })).sort((a, b) => starts(a.o) - starts(b.o) || a.i - b.i).map((x) => x.o);
 }
 
 export function SlashMenu({

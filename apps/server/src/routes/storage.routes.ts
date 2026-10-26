@@ -12,8 +12,9 @@ const upload = multer({ limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB per a
 export function hasAccess(ownerId: string, viewerId: string, sharing: { userId: string; level: AccessLevel }[], required: AccessLevel): boolean {
   if (ownerId === viewerId) return true;
   const rank: Record<AccessLevel, number> = { read: 0, comment: 1, edit: 2, admin: 3 };
-  const grant = sharing.find((s) => s.userId === viewerId || s.userId === '*');
-  return !!grant && rank[grant.level] >= rank[required];
+  // Самый сильный из подходящих: личный доступ «редактирование» не должен
+  // теряться из-за стоящего раньше в списке «читать по ссылке» ('*').
+  return sharing.some((s) => (s.userId === viewerId || s.userId === '*') && rank[s.level] >= rank[required]);
 }
 
 export function storageRoutes(auth: AuthService, engine: FsEngine) {

@@ -20,6 +20,8 @@ export const BLOCK_TAG: Record<PageBlockType, string> = {
   // image/file above. 'div' is just what BlockRow's read-only preview
   // and PageHistoryDialog's BlockPreview fall back to for layout.
   formula: 'div',
+  // Живая карточка задачи (TaskBlockCard) — не contentEditable, как image/file.
+  task: 'div',
 };
 
 export const BLOCK_CLASS: Record<PageBlockType, string> = {
@@ -37,6 +39,7 @@ export const BLOCK_CLASS: Record<PageBlockType, string> = {
   file: '',
   divider: 'border-t border-line/[0.1] my-6',
   formula: '',
+  task: '',
 };
 
 /**

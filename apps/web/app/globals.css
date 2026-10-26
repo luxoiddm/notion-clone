@@ -419,3 +419,13 @@ body {
     margin: 8px auto 0;
   }
 }
+
+/* Таймлайн задач: полоса пересечения дат с задачей, которую ждёт эта. */
+.tl-overlap {
+  background: repeating-linear-gradient(135deg, rgb(217 119 6 / 0.28) 0 5px, rgb(217 119 6 / 0.08) 5px 10px);
+  box-shadow: inset 0 0 0 1px rgb(217 119 6 / 0.45);
+}
+.tl-overlap-error {
+  background: repeating-linear-gradient(135deg, rgb(var(--danger) / 0.25) 0 5px, rgb(var(--danger) / 0.07) 5px 10px);
+  box-shadow: inset 0 0 0 1px rgb(var(--danger) / 0.45);
+}

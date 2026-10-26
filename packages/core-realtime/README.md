@@ -12,6 +12,12 @@ Socket.io wrapper providing:
   `useDocument`, which persists via `@core/fs-engine`. This module never
   touches the filesystem.
 - **Typing indicators** for chat.
+- **Tasks** — `task:updated`, `task:deleted`, `task:activity`,
+  `tasks:projects-changed` go to the personal rooms (`user:{id}`) of a
+  project's members; `task:notify` (`TaskNotifyPayload`) goes only to the
+  people concerned, never to the actor. Helpers: `emitTaskUpdated`,
+  `emitTaskDeleted`, `emitTaskActivity`, `emitTaskNotify`,
+  `emitTaskProjectsChanged`.
 
 ## Wiring it up
 

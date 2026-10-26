@@ -1,5 +1,7 @@
 'use client';
 
+import { TaskBlockCard, TaskPickerDialog } from './tasks/TaskBlock';
+import type { TaskPageRef } from '../lib/api';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BLOCK_TAG, BLOCK_CLASS, BLOCK_SPACING } from '../lib/blockStyles';
 import {
@@ -60,6 +62,8 @@ interface EditorProps {
   /** Set by the parent right after `onOpenPageRef` navigates somewhere with a target block — this component scrolls to and briefly highlights that block once it actually appears in `blocks` (which may be a render or two after navigation starts, while the target page's content is still loading). `onScrolledToBlock` clears it back to null in the parent once handled, so a later click on the *same* block-linking anchor can trigger the scroll again. */
   scrollToBlockId?: string | null;
   onScrolledToBlock?: () => void;
+  /** Документ, в котором открыт редактор — новая задача из блока `/Задача` получит ссылку на него. */
+  pageRef?: TaskPageRef;
 }
 
 // Block types that need a file (picked from personal storage or uploaded
@@ -361,6 +365,8 @@ function blockToClipboardHtmlSingle(block: PageBlock): string {
       return `<p><img src="${block.content}" alt="${block.fileName ?? ''}"></p>`;
     case 'file':
       return `<p><a href="${block.content}">${block.fileName ?? 'Файл'}</a></p>`;
+    case 'task':
+      return `<p>\u2611 ${escapeToHtml(block.fileName ?? 'Задача')}</p>`;
     default:
       return `<p>${block.content}</p>`;
   }
@@ -370,6 +376,7 @@ function blockToClipboardHtmlSingle(block: PageBlock): string {
 function blockToPlainText(block: PageBlock): string {
   if (block.type === 'divider') return '---';
   if (block.type === 'image' || block.type === 'file') return block.fileName ?? block.content;
+  if (block.type === 'task') return `Задача: ${block.fileName ?? ''}`;
   // content is already plain LaTeX text, not HTML — running it through
   // the innerHTML→textContent round-trip below (like every other block
   // type) would misinterpret any literal '<'/'>'/'&' in the formula as
@@ -397,7 +404,9 @@ export function Editor({
   onOpenPageRef,
   scrollToBlockId,
   onScrolledToBlock,
+  pageRef,
 }: EditorProps) {
+  const [taskPickerBlockId, setTaskPickerBlockId] = useState<string | null>(null);
   const [slashState, setSlashState] = useState<{ blockId: string; query: string; position: { top: number; left: number } } | null>(null);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [dragOverAssets, setDragOverAssets] = useState(false);
@@ -951,6 +960,11 @@ export function Editor({
     (blockId: string, type: PageBlockType, opts: { clearContent?: boolean } = {}) => {
       if (FILE_BACKED_TYPES.has(type)) {
         setFilePickerState({ blockId, kind: type as 'image' | 'file' });
+        return;
+      }
+
+      if (type === 'task') {
+        setTaskPickerBlockId(blockId);
         return;
       }
 
@@ -1509,6 +1523,16 @@ export function Editor({
         />
       )}
 
+      {taskPickerBlockId && (
+        <TaskPickerDialog
+          pageRef={pageRef ? [pageRef] : undefined}
+          onClose={() => setTaskPickerBlockId(null)}
+          onPick={(t, p) => {
+            updateBlock(taskPickerBlockId, { type: 'task', content: `${p.id}:${t.id}`, fileName: t.title });
+            setTaskPickerBlockId(null);
+          }}
+        />
+      )}
       {filePickerState && (
         <FilePickerDialog
           onClose={() => setFilePickerState(null)}
@@ -1798,6 +1822,10 @@ function BlockRow({
           onFocus={onFocus}
         />
       );
+    }
+
+    if (block.type === 'task') {
+      return <TaskBlockCard content={block.content} snapshotTitle={block.fileName} />;
     }
 
     if (block.type === 'file') {
