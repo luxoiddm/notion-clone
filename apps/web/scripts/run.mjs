@@ -19,7 +19,12 @@ const port = process.env.PORT || 3000;
 
 console.log(`[web] starting Next.js (${mode}) on port ${port}`);
 
-const child = spawn('npx', ['next', mode, '-p', String(port)], {
+// BIND_HOST=127.0.0.1 — слушать только локально (за nginx/Caddy; так
+// ставит установщик deploy/install). Пусто — все интерфейсы, как раньше.
+const bindHost = (process.env.BIND_HOST || '').trim();
+const args = ['next', mode, '-p', String(port), ...(bindHost ? ['-H', bindHost] : [])];
+
+const child = spawn('npx', args, {
   stdio: 'inherit',
   shell: true,
   cwd: webRoot,

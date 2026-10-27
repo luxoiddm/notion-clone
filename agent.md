@@ -381,6 +381,17 @@ Keep a Changelog, в раздел `[Unreleased]` наверху файла. Не
   Admin, создатель проекта, Team-Lead-участник; дедлайн — только
   постановщик/управляющий). Не дублируй проверки в вебе как источник
   истины — `taskPermissions` в `TaskDrawer.tsx` только прячет кнопки.
+- Установщики — `deploy/install/` (`lib/common.sh` общий для Linux и
+  macOS и обязан оставаться совместимым с bash 3.2: без ассоциативных
+  массивов, `${x,,}`, `mapfile`; `lib/linux.sh` — systemd/nftables;
+  `install-windows.ps1` — PowerShell 5.1, сохранять в UTF-8 с BOM, внешние
+  программы запускать через `Exec`). Меняешь порты, переменные `.env`,
+  способ запуска сервера или новые обязательные службы — обнови все
+  четыре установщика и их проверки (`run_smoke_tests`, `Run-Smoke`).
+- Сервер в продакшене запускается `node --import tsx src/index.ts`
+  (пакеты `@core/*` — исходники TS); `tsx` поэтому в `dependencies`, не в
+  `devDependencies`. `BIND_HOST` — на каком адресе слушают сервер и
+  Next.js (установщик ставит `127.0.0.1`).
 - Видимость задач — только `apps/server/src/lib/taskVisibility.ts`
   (`canSeeProject`, `canSeeTask`, `splitForViewer`, `stubOf`). Любой
   новый маршрут задач берёт задачу через `taskFor()` (404 для невидимых),

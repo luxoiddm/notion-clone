@@ -212,8 +212,11 @@ async function main() {
   // Напоминания о дедлайнах задач (за 2 дня, в день, просрочка).
   startTaskReminders(fs, io);
 
-  httpServer.listen(PORT, () => {
-    console.log(`[startup] Сервер слушает http://localhost:${PORT}`);
+  // BIND_HOST=127.0.0.1 — слушать только локально (за nginx/Caddy; так
+  // ставит установщик deploy/install). Пусто — все интерфейсы, как раньше.
+  const BIND_HOST = process.env.BIND_HOST?.trim() || undefined;
+  httpServer.listen(PORT, BIND_HOST, () => {
+    console.log(`[startup] Сервер слушает http://${BIND_HOST ?? 'localhost'}:${PORT}`);
   });
 }
 
